@@ -6,7 +6,12 @@
     <Nullable>enable</Nullable>
     <PackageId>PureRpc.Transport.Tcp</PackageId>
     <Description>PureRpc TCP transport — high-performance binary RPC protocol over TCP with optional TLS support.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />

@@ -6,7 +6,12 @@
     <Nullable>enable</Nullable>
     <PackageId>PureRpc.Serialization.Json</PackageId>
     <Description>PureRpc JSON serializer using System.Text.Json.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\PureRpc.Abstractions\PureRpc.Abstractions.csproj" />

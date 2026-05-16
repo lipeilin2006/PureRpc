@@ -6,11 +6,15 @@
     <Nullable>enable</Nullable>
     <PackageId>PureRpc.Serialization.MemoryPack</PackageId>
     <Description>PureRpc MemoryPack serializer — high-performance binary serialization using MemoryPack.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="MemoryPack.Core" Version="1.21.4" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />
   </ItemGroup>
 
   <ItemGroup>

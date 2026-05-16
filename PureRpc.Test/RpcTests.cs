@@ -142,32 +142,6 @@ public sealed class JsonRpcTests : SerializerTestBase
         Assert.Equal("json", await Client.EchoAsync(new EchoRequest("json")));
 }
 
-public sealed class MessagePackRpcTests : SerializerTestBase
-{
-    public MessagePackRpcTests() : base(SerializerType.MessagePack) { }
-
-    [Fact(Skip = "MessagePack 无法序列化 MemoryPack 装饰的类型 (缺少 MessagePackObject 特性)")]
-    public async Task Add_Works() =>
-        Assert.Equal(20, await Client.AddAsync(new AddRequest(12, 8)));
-
-    [Fact(Skip = "MessagePack 无法序列化 MemoryPack 装饰的类型")]
-    public async Task Echo_Works() =>
-        Assert.Equal("msgpack", await Client.EchoAsync(new EchoRequest("msgpack")));
-}
-
-public sealed class ProtobufRpcTests : SerializerTestBase
-{
-    public ProtobufRpcTests() : base(SerializerType.Protobuf) { }
-
-    [Fact(Skip = "Protobuf 无法序列化 MemoryPack 装饰的类型 (缺少 ProtoContract 特性)")]
-    public async Task Add_Works() =>
-        Assert.Equal(25, await Client.AddAsync(new AddRequest(10, 15)));
-
-    [Fact(Skip = "Protobuf 无法序列化 MemoryPack 装饰的类型")]
-    public async Task Echo_Works() =>
-        Assert.Equal("proto", await Client.EchoAsync(new EchoRequest("proto")));
-}
-
 // --- Advanced RPC scenarios ---
 
 public abstract class AdvancedRpcTestBase : IAsyncLifetime
@@ -299,14 +273,6 @@ public sealed class DefaultHeaderTests : AdvancedRpcTestBase
         RawClient.SetDefaultHeader("k2", "v2");
         RawClient.ClearDefaultHeaders();
     }
-}
-
-// --- KCP Transport (if available) ---
-
-public sealed class KcpAddTest
-{
-    [Fact(Skip = "KCP 在测试环境中因 UDP TIME_WAIT 导致不稳定")]
-    public void Add_TwoNumbers_ReturnsSum() { }
 }
 
 // --- WebSocket Transport ---
