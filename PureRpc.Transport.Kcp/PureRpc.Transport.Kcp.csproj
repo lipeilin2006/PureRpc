@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>PureRpc.Transport.Kcp</PackageId>
+    <Description>PureRpc KCP transport — reliable UDP transport based on the KCP protocol for low-latency RPC.</Description>
   </PropertyGroup>
 
   <ItemGroup>

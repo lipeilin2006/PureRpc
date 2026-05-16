@@ -5,6 +5,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <OutputType>Library</OutputType>
+    <IsPackable>true</IsPackable>
+    <PackageId>PureRpc.Transport.Http2</PackageId>
+    <Description>PureRpc HTTP/2 transport — RPC over HTTP/2 using ASP.NET Core (minimal API) and Kestrel.</Description>
   </PropertyGroup>
 
   <ItemGroup>

@@ -41,8 +41,11 @@ internal sealed partial class WebSocketServerTransport : IServerTransport
         _serverCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
         var ep = (IPEndPoint)_options.EndPoint;
+        // HttpListener 在 Linux 上不支持 IPAddress.Any (0.0.0.0) 作为前缀，
+        // 需要使用 "+" (所有接口) 或 "*" (通配符)
+        var addrStr = ep.Address.Equals(IPAddress.Any) ? "+" : ep.Address.ToString();
         _listener = new HttpListener();
-        _listener.Prefixes.Add($"http://{ep.Address}:{ep.Port}{_options.Path}/");
+        _listener.Prefixes.Add($"http://{addrStr}:{ep.Port}{_options.Path}/");
         _listener.Start();
         LogListening(_logger, $"{ep.Address}:{ep.Port}{_options.Path}");
 

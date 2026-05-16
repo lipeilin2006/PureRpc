@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>PureRpc.Abstractions</PackageId>
+    <Description>PureRpc abstractions — core interfaces and base types for building high-performance RPC services.</Description>
   </PropertyGroup>
 
   <ItemGroup>

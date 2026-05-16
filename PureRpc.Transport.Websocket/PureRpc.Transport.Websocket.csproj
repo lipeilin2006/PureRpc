@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>PureRpc.Transport.Websocket</PackageId>
+    <Description>PureRpc WebSocket transport — browser-compatible RPC transport using WebSocket (System.Net.WebSockets).</Description>
   </PropertyGroup>
 
   <ItemGroup>

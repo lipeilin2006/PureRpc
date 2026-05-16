@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>PureRpc.Serialization.MemoryPack</PackageId>
+    <Description>PureRpc MemoryPack serializer — high-performance binary serialization using MemoryPack.</Description>
   </PropertyGroup>
 
   <ItemGroup>

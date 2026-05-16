@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>PureRpc.Transport.Tcp</PackageId>
+    <Description>PureRpc TCP transport — high-performance binary RPC protocol over TCP with optional TLS support.</Description>
   </PropertyGroup>
 
   <ItemGroup>

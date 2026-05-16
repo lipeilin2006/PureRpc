@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>PureRpc.Serialization.Json</PackageId>
+    <Description>PureRpc JSON serializer using System.Text.Json.</Description>
   </PropertyGroup>
 
   <ItemGroup>

@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>PureRpc.Serialization.Protobuf</PackageId>
+    <Description>PureRpc Protobuf serializer using protobuf-net.</Description>
   </PropertyGroup>
 
   <ItemGroup>

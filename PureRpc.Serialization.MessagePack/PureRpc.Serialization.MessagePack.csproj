@@ -4,10 +4,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>PureRpc.Serialization.MessagePack</PackageId>
+    <Description>PureRpc MessagePack serializer using the MessagePack-CSharp library.</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="MessagePack" Version="3.1.3" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />
   </ItemGroup>
 
   <ItemGroup>

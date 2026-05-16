@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>PureRpc</PackageId>
+    <Description>PureRpc core — high-performance RPC client/server engine with pipeline-based middleware, request pooling, and DI integration.</Description>
   </PropertyGroup>
 
   <ItemGroup>
