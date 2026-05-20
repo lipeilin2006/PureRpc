@@ -1,5 +1,12 @@
 # PureRpc
 
+<div id="badges">
+	<a href="https://www.nuget.org/packages/PureRpc"><img src="https://img.shields.io/nuget/vpre/PureRpc?style=for-the-badge" alt="NuGet Pre"/></a>
+	<a href="https://www.nuget.org/packages/PureRpc"><img src="https://img.shields.io/nuget/dt/PureRpc?style=for-the-badge" alt="NuGet Downloads"/></a>
+	<a href="https://github.com/lipeilin2006/PureRpc/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/lipeilin2006/PureRpc/ci.yml?style=for-the-badge" alt="CI"/></a>
+	<a href="https://github.com/lipeilin2006/PureRpc/blob/main/LICENSE"><img src="https://img.shields.io/github/license/lipeilin2006/PureRpc?style=for-the-badge" alt="License"/></a>
+</div>
+
 A high-performance, modular RPC framework for .NET with pluggable transports, serializers, interceptors, a C# source generator, and built-in authorization/metrics.
 
 ## Features
