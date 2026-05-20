@@ -25,7 +25,7 @@ public sealed class ServiceBaseTests
     }
 
     [Fact]
-    public void Context_IsAsyncLocal_IsolatedPerExecutionFlow()
+    public async Task Context_IsAsyncLocal_IsolatedPerExecutionFlow()
     {
         var ctx1 = new RpcContext(new ArrayBufferWriter<byte>()) { ServiceName = "Svc1" };
         var ctx2 = new RpcContext(new ArrayBufferWriter<byte>()) { ServiceName = "Svc2" };
@@ -48,7 +48,7 @@ public sealed class ServiceBaseTests
             result2 = service2.Context.ServiceName;
         });
 
-        Task.WaitAll(task1, task2);
+        await Task.WhenAll(task1, task2);
 
         Assert.Equal("Svc1", result1);
         Assert.Equal("Svc2", result2);
