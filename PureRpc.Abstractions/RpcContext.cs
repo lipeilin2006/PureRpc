@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Buffers;
 using System.Net;
+using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -24,6 +25,12 @@ public sealed class RpcContext
 
     // 在高性能场景下，建议由 Transport 传入 CancellationToken 而非 Context 自带 CTS
     public CancellationToken CancellationToken { get; set; }
+
+    /// <summary>
+    /// 当前认证用户主体，由 IAuthorizationHandler 在授权成功后设置。
+    /// 服务方法可通过 ServiceBase.User 读取。
+    /// </summary>
+    public ClaimsPrincipal? User { get; set; }
 
     /// <summary>
     /// 请求/响应元数据头部。
@@ -53,6 +60,7 @@ public sealed class RpcContext
         ServiceName = string.Empty;
         MethodName = string.Empty;
         RemoteEndPoint = null;
+        User = null;
         IsAborted = false;
         CancellationToken = CancellationToken.None;
         Headers.Clear();

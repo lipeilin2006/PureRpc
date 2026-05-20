@@ -45,6 +45,19 @@ public class PureRpcGenerator : IIncrementalGenerator
             Methods = new List<MethodMetadata>()
         };
 
+        // Read service-level [Authorize]
+        var authAttr = symbol.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "AuthorizeAttribute");
+        if (authAttr != null)
+        {
+            metadata.HasAuthorize = true;
+            metadata.AuthorizePolicy = authAttr.ConstructorArguments.FirstOrDefault().Value?.ToString();
+            foreach (var namedArg in authAttr.NamedArguments)
+            {
+                if (namedArg.Key == "Roles")
+                    metadata.AuthorizeRoles = namedArg.Value.Value?.ToString();
+            }
+        }
+
         foreach (var member in symbol.GetMembers().OfType<IMethodSymbol>())
         {
             // 匹配简化后的属性名 RpcMethodAttribute
@@ -70,6 +83,20 @@ public class PureRpcGenerator : IIncrementalGenerator
             if (member.ReturnType is INamedTypeSymbol namedType && namedType.IsGenericType)
                 responseType = namedType.TypeArguments[0].ToDisplayString();
 
+            // Read method-level [Authorize] and [AllowAnonymous]
+            var methodAuthAttr = member.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "AuthorizeAttribute");
+            var allowAnonAttr = member.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "AllowAnonymousAttribute");
+
+            string? methodAuthRoles = null;
+            if (methodAuthAttr != null)
+            {
+                foreach (var namedArg in methodAuthAttr.NamedArguments)
+                {
+                    if (namedArg.Key == "Roles")
+                        methodAuthRoles = namedArg.Value.Value?.ToString();
+                }
+            }
+
             metadata.Methods.Add(new MethodMetadata
             {
                 ProtocolMethodName = protocolMethodName!,
@@ -79,7 +106,11 @@ public class PureRpcGenerator : IIncrementalGenerator
                 RequestType = payloadParam?.Type.ToDisplayString() ?? "bool",
                 IsVoid = isVoid,
                 HasPayload = payloadParam != null,
-                HasCancellationToken = hasCt
+                HasCancellationToken = hasCt,
+                HasAuthorize = methodAuthAttr != null,
+                AuthorizePolicy = methodAuthAttr?.ConstructorArguments.FirstOrDefault().Value?.ToString(),
+                AuthorizeRoles = methodAuthRoles,
+                AllowAnonymous = allowAnonAttr != null
             });
         }
         return metadata;
@@ -140,6 +171,12 @@ namespace {{m.Namespace}}
 """);
         }
 
+        bool hasAnyAuth = m.HasAuthorize || m.Methods.Any(mtd => mtd.HasAuthorize || mtd.AllowAnonymous);
+        bool hasMethodOverrides = hasAnyAuth && m.Methods.Any(mtd => mtd.HasAuthorize || mtd.AllowAnonymous);
+
+        // Helper to produce a C# string literal (or "null")
+        static string Lit(string? s) => s != null ? $"\"{s.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"" : "null";
+
         sb.AppendLine($$"""
     }
 
@@ -149,11 +186,31 @@ namespace {{m.Namespace}}
         
         private readonly {{m.InterfaceName}} _service;
         private readonly ISerializer _serializer;
+""");
 
-        public {{dispatcherName}}({{m.InterfaceName}} service, ISerializer serializer) 
+        if (hasAnyAuth)
         {
-            _service = service;
-            _serializer = serializer;
+            sb.AppendLine("        private readonly IAuthorizationHandler? _authHandler;");
+        }
+
+        sb.Append($"        public {dispatcherName}({m.InterfaceName} service, ISerializer serializer");
+
+        if (hasAnyAuth)
+        {
+            sb.Append(", IAuthorizationHandler? authHandler = null");
+        }
+
+        sb.AppendLine(")");
+        sb.AppendLine("        {");
+        sb.AppendLine("            _service = service;");
+        sb.AppendLine("            _serializer = serializer;");
+
+        if (hasAnyAuth)
+        {
+            sb.AppendLine("            _authHandler = authHandler;");
+        }
+
+        sb.AppendLine($$"""
         }
 
         public async ValueTask DispatchAsync(string methodName, ReadOnlySequence<byte> payload, RpcContext context)
@@ -163,9 +220,68 @@ namespace {{m.Namespace}}
 
             try
             {
-                switch (methodName)
-                {
 """);
+
+        // Auth check code (before the main dispatch switch)
+        if (hasAnyAuth)
+        {
+            if (hasMethodOverrides)
+            {
+                // --- Per-method auth resolution via switch ---
+                // Service-level [Authorize] and method-level [Authorize] are COMBINED (AND logic),
+                // matching ASP.NET Core behavior: method-level auth ADDS to service-level auth.
+                // [AllowAnonymous] on a method skips all auth.
+                sb.AppendLine("                bool __skipAuth = false;");
+                sb.AppendLine("                bool __methodAuth = false;");
+                sb.AppendLine("                string? __methodPolicy = null;");
+                sb.AppendLine("                string? __methodRoles = null;");
+                sb.AppendLine("                switch (methodName)");
+                sb.AppendLine("                {");
+                foreach (var method in m.Methods)
+                {
+                    if (!method.HasAuthorize && !method.AllowAnonymous) continue;
+                    if (method.AllowAnonymous)
+                    {
+                        sb.AppendLine($"                    case \"{method.ProtocolMethodName}\":");
+                        sb.AppendLine("                        __skipAuth = true;");
+                        sb.AppendLine("                        break;");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"                    case \"{method.ProtocolMethodName}\":");
+                        sb.AppendLine("                        __methodAuth = true;");
+                        sb.AppendLine($"                        __methodPolicy = {Lit(method.AuthorizePolicy)};");
+                        sb.AppendLine($"                        __methodRoles = {Lit(method.AuthorizeRoles)};");
+                        sb.AppendLine("                        break;");
+                    }
+                }
+                sb.AppendLine("                    default:");
+                sb.AppendLine("                        break;");
+                sb.AppendLine("                }");
+                bool hasServiceAuth = m.HasAuthorize;
+                sb.AppendLine($"                if (!__skipAuth && (__methodAuth || {(hasServiceAuth ? "true" : "false")}))");
+                sb.AppendLine("                {");
+                sb.AppendLine("                    if (_authHandler == null)");
+                sb.AppendLine("                        throw new InvalidOperationException(\"IAuthorizationHandler is not registered.\");");
+                if (hasServiceAuth)
+                {
+                    sb.AppendLine($"                    await _authHandler.AuthorizeAsync(context, {Lit(m.AuthorizePolicy)}, {Lit(m.AuthorizeRoles)}, context.CancellationToken);");
+                }
+                sb.AppendLine("                    if (__methodAuth)");
+                sb.AppendLine("                        await _authHandler.AuthorizeAsync(context, __methodPolicy, __methodRoles, context.CancellationToken);");
+                sb.AppendLine("                }");
+            }
+            else
+            {
+                // Simple service-level auth (no per-method overrides)
+                sb.AppendLine("                if (_authHandler == null)");
+                sb.AppendLine("                    throw new InvalidOperationException(\"IAuthorizationHandler is not registered.\");");
+                sb.AppendLine($"                await _authHandler.AuthorizeAsync(context, {Lit(m.AuthorizePolicy)}, {Lit(m.AuthorizeRoles)}, context.CancellationToken);");
+            }
+        }
+
+        sb.AppendLine("                switch (methodName)");
+        sb.AppendLine("                {");
 
         foreach (var method in m.Methods)
         {
@@ -208,10 +324,21 @@ namespace {{m.Namespace}}
             {
                 var impl = sp.GetRequiredService<{{m.InterfaceName}}>();
                 var serializer = sp.GetRequiredService<ISerializer>();
-                return new {{dispatcherName}}(impl, serializer);
-            });
-            return builder;
+""");
+
+        if (hasAnyAuth)
+        {
+            sb.AppendLine("                var authHandler = sp.GetService<IAuthorizationHandler>();");
         }
+
+        sb.Append($"                return new {dispatcherName}(impl, serializer");
+        if (hasAnyAuth) sb.Append(", authHandler");
+        sb.AppendLine(");");
+        sb.AppendLine("            });");
+        sb.AppendLine("            return builder;");
+        sb.AppendLine("        }");
+
+        sb.AppendLine($$"""
 
         public static IClientBuilder With{{serviceShortName}}Proxy(this IClientBuilder builder)
         {
@@ -230,7 +357,17 @@ namespace {{m.Namespace}}
         return sb.ToString();
     }
 
-    private class ServiceMetadata { public string Namespace = null!; public string InterfaceName = null!; public string ServiceName = null!; public List<MethodMetadata> Methods = null!; }
+    private class ServiceMetadata
+    {
+        public string Namespace = null!;
+        public string InterfaceName = null!;
+        public string ServiceName = null!;
+        public List<MethodMetadata> Methods = null!;
+        public bool HasAuthorize;
+        public string? AuthorizePolicy;
+        public string? AuthorizeRoles;
+    }
+
     private class MethodMetadata
     {
         public string ProtocolMethodName = null!;
@@ -241,5 +378,9 @@ namespace {{m.Namespace}}
         public bool IsVoid;
         public bool HasPayload;
         public bool HasCancellationToken;
+        public bool HasAuthorize;
+        public string? AuthorizePolicy;
+        public string? AuthorizeRoles;
+        public bool AllowAnonymous;
     }
 }
