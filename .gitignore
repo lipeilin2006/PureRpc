@@ -427,3 +427,7 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# PureRpc thesis output
+thesis_output/
+generate_thesis.py
