@@ -94,8 +94,33 @@ public class PureRpcGenerator : IIncrementalGenerator
                           member.ReturnType.ToDisplayString() == "void";
 
             string responseType = "object";
+            bool isRpcResult = false;
             if (member.ReturnType is INamedTypeSymbol namedType && namedType.IsGenericType)
-                responseType = namedType.TypeArguments[0].ToDisplayString();
+            {
+                var typeArg = namedType.TypeArguments[0];
+                var typeArgName = typeArg.ToDisplayString();
+
+                // Detect RpcResult<T> — unwrap to inner type for serialization
+                if (typeArg is INamedTypeSymbol resultType &&
+                    resultType.Name == "RpcResult" &&
+                    resultType.IsGenericType)
+                {
+                    isRpcResult = true;
+                    responseType = resultType.TypeArguments[0].ToDisplayString();
+                }
+                else if (typeArg is INamedTypeSymbol resultType2 &&
+                         resultType2.Name == "RpcResult" &&
+                         !resultType2.IsGenericType)
+                {
+                    isRpcResult = true;
+                    isVoid = true;
+                    responseType = "object";
+                }
+                else
+                {
+                    responseType = typeArgName;
+                }
+            }
 
             // Read method-level [Authorize] (multiple) and [AllowAnonymous]
             var methodAuthAttrs = member.GetAttributes().Where(a => a.AttributeClass?.Name == "AuthorizeAttribute");
@@ -125,6 +150,7 @@ public class PureRpcGenerator : IIncrementalGenerator
                 ResponseType = responseType,
                 RequestType = payloadParam?.Type.ToDisplayString() ?? "bool",
                 IsOneWay = isOneWay,
+                IsRpcResult = isRpcResult,
                 IsVoid = isVoid,
                 HasPayload = payloadParam != null,
                 HasCancellationToken = hasCt,
@@ -182,15 +208,7 @@ namespace {{m.Namespace}}
             var argWriter = new ArrayBufferWriter<byte>(128);
             {{(method.HasPayload ? "_serializer.Serialize(argWriter, request);" : "// No payload")}}
 
-            {{(method.IsOneWay
-                ? $@"// IsOneWay: fire-and-forget, no response expected
-            _ = _client.CallAsync(""{m.ServiceName}"", ""{method.ProtocolMethodName}"", 
-                new ReadOnlySequence<byte>(argWriter.WrittenMemory), {(method.HasCancellationToken ? "ct" : "default")});
-            {(method.IsVoid ? "return;" : "return default;")}"
-                : $@"var responseBytes = await _client.CallAsync(""{m.ServiceName}"", ""{method.ProtocolMethodName}"", 
-                new ReadOnlySequence<byte>(argWriter.WrittenMemory), {(method.HasCancellationToken ? "ct" : "default")});
-            
-            {(method.IsVoid ? "return;" : $"return _serializer.Deserialize<{method.ResponseType}>(responseBytes);")}")}}
+            {{GenerateProxyBody(m, method)}}
         }
 """);
         }
@@ -201,6 +219,60 @@ namespace {{m.Namespace}}
 
         // Helper to produce a C# string literal (or "null")
         static string Lit(string? s) => s != null ? $"\"{s.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"" : "null";
+
+        // Generate the body of a proxy method
+        static string GenerateProxyBody(ServiceMetadata svc, MethodMetadata method)
+        {
+            var callExpr = $@"await _client.CallAsync(""{svc.ServiceName}"", ""{method.ProtocolMethodName}"", 
+                new ReadOnlySequence<byte>(argWriter.WrittenMemory), {(method.HasCancellationToken ? "ct" : "default")})";
+
+            if (method.IsOneWay)
+                return $@"// IsOneWay: fire-and-forget, no response expected
+            _ = _client.CallAsync(""{svc.ServiceName}"", ""{method.ProtocolMethodName}"", 
+                new ReadOnlySequence<byte>(argWriter.WrittenMemory), {(method.HasCancellationToken ? "ct" : "default")});
+            {(method.IsVoid ? "return;" : "return default;")}";
+
+            if (method.IsRpcResult)
+            {
+                if (method.IsVoid)
+                {
+                    // Non-generic RpcResult
+                    return $@"try
+            {{
+                var responseBytes = {callExpr};
+                return PureRpc.Abstractions.RpcResult.Success();
+            }}
+            catch (System.Exception __ex)
+            {{
+                return PureRpc.Abstractions.RpcResult.Failure(__ex.Message);
+            }}";
+                }
+                else
+                {
+                    // Generic RpcResult<T>
+                    return $@"try
+            {{
+                var responseBytes = {callExpr};
+                var __val = _serializer.Deserialize<{method.ResponseType}>(responseBytes);
+                return PureRpc.Abstractions.RpcResult<{method.ResponseType}>.Success(__val);
+            }}
+            catch (System.Exception __ex)
+            {{
+                return PureRpc.Abstractions.RpcResult<{method.ResponseType}>.Failure(__ex.Message);
+            }}";
+                }
+            }
+
+            // Normal (non-RpcResult) method
+            if (method.IsVoid)
+                return $@"var responseBytes = {callExpr};
+            
+            return;";
+
+            return $@"var responseBytes = {callExpr};
+            
+            return _serializer.Deserialize<{method.ResponseType}>(responseBytes);";
+        }
 
         // Emit multiple auth handler calls for a list of entries
         static void EmitAuthCalls(StringBuilder sb, List<AuthEntry> entries, bool ifGuard = false)
@@ -345,17 +417,27 @@ namespace {{m.Namespace}}
             if (method.HasPayload) callArgsList.Add("req");
             if (method.HasCancellationToken) callArgsList.Add("context.CancellationToken");
             string callParamsStr = string.Join(", ", callArgsList);
+            bool hasResult = !method.IsVoid || method.IsRpcResult;
+            string resultVar = method.IsRpcResult ? "var __res = " : "";
+            string callLine = $"{resultVar}await _service.{method.SourceMethodName}({callParamsStr})";
 
-            sb.AppendLine($$"""
+                sb.Append($$"""
                     case "{{method.ProtocolMethodName}}":
                         {
                             {{(method.HasPayload ? $"// 反序列化会分配请求 DTO；可通过紧凑 DTO/值类型字段减少热路径对象数量。\n                            var req = _serializer.Deserialize<{method.RequestType}>(payload);" : "")}}
-                            {{(method.IsVoid ? "" : "var res = ")}}await _service.{{method.SourceMethodName}}({{callParamsStr}});
-                            {{(method.IsOneWay ? "// IsOneWay: no response sent" : (method.IsVoid ? "" : "// 响应直接写入 RpcContext 的池化缓冲，避免额外 byte[] 中转。\n                            _serializer.Serialize(context.ResponseBuffer, res);"))}}
+                            {{(method.IsRpcResult && !method.IsVoid
+                                ? $"{callLine};\n                            if (__res.IsSuccess)\n                            {{\n                                _serializer.Serialize(context.ResponseBuffer, __res.Value);\n                            }}\n                            else\n                            {{\n                                context.Abort();\n                                var __errBytes = System.Text.Encoding.UTF8.GetBytes(__res.ErrorMessage ?? \"Request failed\");\n                                ((System.Buffers.ArrayBufferWriter<byte>)context.ResponseBuffer).Write(__errBytes);\n                            }}"
+                                : method.IsRpcResult
+                                    ? $"{callLine};\n                            if (!__res.IsSuccess)\n                            {{\n                                context.Abort();\n                                var __errBytes = System.Text.Encoding.UTF8.GetBytes(__res.ErrorMessage ?? \"Request failed\");\n                                ((System.Buffers.ArrayBufferWriter<byte>)context.ResponseBuffer).Write(__errBytes);\n                            }}"
+                                    : method.IsOneWay
+                                        ? "// IsOneWay: no response sent\n                            " + callLine + ";"
+                                        : method.IsVoid
+                                            ? callLine + ";"
+                                            : $"var res = {callLine};\n                            // 响应直接写入 RpcContext 的池化缓冲，避免额外 byte[] 中转。\n                            _serializer.Serialize(context.ResponseBuffer, res);")}}
                             break;
                         }
 """);
-        }
+            }
 
         sb.AppendLine($$"""
                     default:
@@ -430,6 +512,7 @@ namespace {{m.Namespace}}
         public string RequestType = null!;
         public bool IsVoid;
         public bool IsOneWay;
+        public bool IsRpcResult;
         public bool HasPayload;
         public bool HasCancellationToken;
         public List<AuthEntry> AuthorizeEntries = new();
