@@ -8,6 +8,7 @@
   <Project Path="PureRpc.Serialization.Json/PureRpc.Serialization.Json.csproj" Id="8373aae3-3429-4054-b886-68592514b196" />
   <Project Path="PureRpc.Serialization.MemoryPack/PureRpc.Serialization.MemoryPack.csproj" Id="2999ed0c-b381-4db4-bae7-9d90abdc2b70" />
   <Project Path="PureRpc.BenchMark/PureRpc.BenchMark.csproj" />
+  <Project Path="PureRpc.BenchMark.Grpc/PureRpc.BenchMark.Grpc.csproj" />
   <Project Path="PureRpc.Transport.Kcp/PureRpc.Transport.Kcp.csproj" />
   <Project Path="PureRpc.Transport.Tcp/PureRpc.Transport.Tcp.csproj" Id="9249971e-92b5-43be-a9a5-d0e6ba798454" />
   <Project Path="PureRpc.Transport.Websocket/PureRpc.Transport.Websocket.csproj" Id="7f393882-9f55-48d3-bf9b-f85a707d1d91" />
