@@ -431,3 +431,4 @@ FodyWeavers.xsd
 # PureRpc thesis output
 thesis_output/
 generate_thesis.py
+generate_ppt.py
