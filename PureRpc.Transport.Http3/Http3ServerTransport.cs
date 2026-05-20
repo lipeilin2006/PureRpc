@@ -8,12 +8,12 @@ using Microsoft.Extensions.ObjectPool;
 using Microsoft.Extensions.Options;
 using PureRpc.Abstractions;
 
-namespace PureRpc.Transport.Http2;
+namespace PureRpc.Transport.Http3;
 
-internal sealed partial class Http2ServerTransport : IServerTransport
+internal sealed partial class Http3ServerTransport : IServerTransport
 {
-    private readonly Http2ServerOptions _options;
-    private readonly ILogger<Http2ServerTransport> _logger;
+    private readonly Http3ServerOptions _options;
+    private readonly ILogger<Http3ServerTransport> _logger;
     private readonly ObjectPool<RpcContext> _contextPool;
     private readonly ConcurrentDictionary<uint, CancellationTokenSource> _activeRequests = new();
 
@@ -23,10 +23,10 @@ internal sealed partial class Http2ServerTransport : IServerTransport
     private bool _disposed;
     private Func<RpcContext, ReadOnlySequence<byte>, Task>? _onRequest;
 
-    public Http2ServerTransport(IOptions<Http2ServerOptions> options, ILogger<Http2ServerTransport>? logger = null)
+    public Http3ServerTransport(IOptions<Http3ServerOptions> options, ILogger<Http3ServerTransport>? logger = null)
     {
         _options = options.Value ?? throw new ArgumentNullException(nameof(options));
-        _logger = logger ?? NullLogger<Http2ServerTransport>.Instance;
+        _logger = logger ?? NullLogger<Http3ServerTransport>.Instance;
         var provider = new DefaultObjectPoolProvider { MaximumRetained = 1024 };
         _contextPool = provider.Create(new RpcContextPolicy());
     }
@@ -42,10 +42,15 @@ internal sealed partial class Http2ServerTransport : IServerTransport
         {
             kestrel.Listen(System.Net.IPAddress.Any, _options.Port, listen =>
             {
-                listen.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2;
+                listen.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http3;
                 if (_options.TlsCertPath != null && _options.TlsKeyPath != null)
                 {
                     listen.UseHttps(_options.TlsCertPath, _options.TlsKeyPath);
+                }
+                else
+                {
+                    // HTTP/3 requires TLS; use a self-signed dev cert as fallback
+                    listen.UseHttps();
                 }
             });
         });
@@ -69,7 +74,7 @@ internal sealed partial class Http2ServerTransport : IServerTransport
             var span = requestBytes.AsSpan();
             byte type = span[0];
 
-            // Cancel 帧：查找并取消正在处理的请求
+            // Cancel frame
             if (type == 8)
             {
                 uint cancelId = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(1, 4));
@@ -125,7 +130,6 @@ internal sealed partial class Http2ServerTransport : IServerTransport
             ctx.MethodName = methodName;
             foreach (var kv in headers) ctx.Headers[kv.Key] = kv.Value;
 
-            // 注册可被取消的 CTS
             var requestCts = CancellationTokenSource.CreateLinkedTokenSource(
                 _serverCts?.Token ?? default, context.RequestAborted);
             _activeRequests[requestId] = requestCts;
@@ -141,7 +145,6 @@ internal sealed partial class Http2ServerTransport : IServerTransport
                 requestCts.Dispose();
             }
 
-            // 构建响应
             var data = ((ArrayBufferWriter<byte>)ctx.ResponseBuffer).WrittenMemory;
             int hc = ctx.Headers.Count;
             int hbs = 0;
@@ -182,6 +185,7 @@ internal sealed partial class Http2ServerTransport : IServerTransport
             await context.Response.Body.WriteAsync(resp).ConfigureAwait(false);
             _contextPool.Return(ctx);
         }
+        catch (OperationCanceledException) { context.Response.StatusCode = 499; }
         catch (Exception ex) { LogError(_logger, ex); context.Response.StatusCode = 500; }
     }
 
@@ -192,8 +196,6 @@ internal sealed partial class Http2ServerTransport : IServerTransport
         return ms.ToArray();
     }
 
-    // HTTP/2 传输的响应在 HandleRequestAsync 中内联发送，
-    // 此处不需要额外操作。
     public ValueTask SendResponseAsync(RpcContext context, CancellationToken ct) => default;
 
     public async ValueTask DisposeAsync()
@@ -207,9 +209,9 @@ internal sealed partial class Http2ServerTransport : IServerTransport
     }
 
     #region Logging
-    [LoggerMessage(EventId = 1101, Level = LogLevel.Information, Message = "[HTTP2] Server listening on port {Port}")]
+    [LoggerMessage(EventId = 1201, Level = LogLevel.Information, Message = "[HTTP3] Server listening on port {Port}")]
     private static partial void LogListening(ILogger logger, int port);
-    [LoggerMessage(EventId = 1102, Level = LogLevel.Error, Message = "[HTTP2] Request error")]
+    [LoggerMessage(EventId = 1202, Level = LogLevel.Error, Message = "[HTTP3] Request error")]
     private static partial void LogError(ILogger logger, Exception ex);
     #endregion
 }

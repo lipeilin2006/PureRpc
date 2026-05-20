@@ -12,5 +12,6 @@
   <Project Path="PureRpc.Transport.Tcp/PureRpc.Transport.Tcp.csproj" Id="9249971e-92b5-43be-a9a5-d0e6ba798454" />
   <Project Path="PureRpc.Transport.Websocket/PureRpc.Transport.Websocket.csproj" Id="7f393882-9f55-48d3-bf9b-f85a707d1d91" />
   <Project Path="PureRpc.Transport.Http2/PureRpc.Transport.Http2.csproj" Id="7f393882-9f55-48d3-bf9b-f85a707d2d92" />
+  <Project Path="PureRpc.Transport.Http3/PureRpc.Transport.Http3.csproj" />
   <Project Path="PureRpc/PureRpc.csproj" />
 </Solution>

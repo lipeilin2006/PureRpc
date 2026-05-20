@@ -273,7 +273,7 @@ internal sealed partial class TcpServerTransport : IServerTransport
             var span = writer.GetSpan(frameHeaderSize);
 
             BinaryPrimitives.WriteInt32LittleEndian(span[..4], bodyLen);
-            span[4] = (byte)RpcMessageType.Request;
+            span[4] = ctx.IsAborted ? (byte)RpcMessageType.Error : (byte)RpcMessageType.Response;
             BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(5, 4), ctx.RequestId);
             BinaryPrimitives.WriteInt32LittleEndian(span.Slice(9, 4), ctx.IsAborted ? 500 : 200);
 

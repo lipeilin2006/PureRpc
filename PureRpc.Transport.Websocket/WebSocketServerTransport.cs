@@ -17,6 +17,7 @@ internal sealed partial class WebSocketServerTransport : IServerTransport
     private readonly WebSocketServerOptions _options;
     private readonly ILogger<WebSocketServerTransport> _logger;
     private readonly ObjectPool<RpcContext> _contextPool;
+    private readonly ConcurrentDictionary<uint, CancellationTokenSource> _activeRequests = new();
 
     private readonly SemaphoreSlim _requestThrottle = new(512, 512);
     private HttpListener? _listener;
@@ -115,12 +116,23 @@ internal sealed partial class WebSocketServerTransport : IServerTransport
 
     private void ProcessRequest(WebSocket socket, byte[] message, long connId)
     {
-        if (message.Length < 9 || _onRequest == null) return;
+        if (message.Length < 5 || _onRequest == null) return;
         var span = message.AsSpan();
         byte type = span[0];
         uint requestId = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(1, 4));
 
-        if (type == 8) return;
+        // Cancel frame
+        if (type == 8)
+        {
+            if (_activeRequests.TryRemove(requestId, out var cts))
+            {
+                cts.Cancel();
+                cts.Dispose();
+            }
+            return;
+        }
+
+        if (type != 1 || message.Length < 9) return;
 
         int svcLen = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(5, 4));
         if (svcLen <= 0 || svcLen > 256) return;
@@ -161,10 +173,14 @@ internal sealed partial class WebSocketServerTransport : IServerTransport
         foreach (var kv in headers)
             context.Headers[kv.Key] = kv.Value;
 
-        _ = ProcessRequestAsync(socket, context, payload);
+        var requestCts = CancellationTokenSource.CreateLinkedTokenSource(_serverCts?.Token ?? default);
+        _activeRequests[requestId] = requestCts;
+        context.CancellationToken = requestCts.Token;
+
+        _ = ProcessRequestAsync(socket, context, payload, requestCts);
     }
 
-    private async Task ProcessRequestAsync(WebSocket socket, RpcContext context, ReadOnlySequence<byte> payload)
+    private async Task ProcessRequestAsync(WebSocket socket, RpcContext context, ReadOnlySequence<byte> payload, CancellationTokenSource requestCts)
     {
         await _requestThrottle.WaitAsync().ConfigureAwait(false);
         try
@@ -223,6 +239,8 @@ internal sealed partial class WebSocketServerTransport : IServerTransport
         {
             _requestThrottle.Release();
             _contextPool.Return(context);
+            _activeRequests.TryRemove(context.RequestId, out _);
+            requestCts.Dispose();
         }
     }
 

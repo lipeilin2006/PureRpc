@@ -7,6 +7,7 @@
 internal enum RpcMessageType : byte
 {
     Request = 1,
+    Response = 2,
     Error = 3,
     Cancel = 8
 }

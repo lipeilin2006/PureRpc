@@ -173,7 +173,7 @@ internal sealed partial class WebSocketClientTransport : IClientTransport
 
     private void ProcessResponse(byte[] message)
     {
-        if (message.Length < 10 || _onResponse == null) return;
+        if (message.Length < 13 || _onResponse == null) return;
         var span = message.AsSpan();
         byte type = span[0];
         uint requestId = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(1, 4));
