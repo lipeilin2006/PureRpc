@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -14,6 +15,7 @@ internal sealed partial class Http2ServerTransport : IServerTransport
     private readonly Http2ServerOptions _options;
     private readonly ILogger<Http2ServerTransport> _logger;
     private readonly ObjectPool<RpcContext> _contextPool;
+    private readonly ConcurrentDictionary<uint, CancellationTokenSource> _activeRequests = new();
 
     private WebApplication? _app;
     private CancellationTokenSource? _serverCts;
@@ -61,11 +63,25 @@ internal sealed partial class Http2ServerTransport : IServerTransport
         try
         {
             var requestBytes = await ReadBodyAsync(context.Request.Body).ConfigureAwait(false);
-            if (requestBytes.Length < 9 || _onRequest == null)
+            if (requestBytes.Length < 5 || _onRequest == null)
             { context.Response.StatusCode = 400; return; }
 
             var span = requestBytes.AsSpan();
             byte type = span[0];
+
+            // Cancel 帧：查找并取消正在处理的请求
+            if (type == 8)
+            {
+                uint cancelId = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(1, 4));
+                if (_activeRequests.TryRemove(cancelId, out var cts))
+                {
+                    cts.Cancel();
+                    cts.Dispose();
+                }
+                context.Response.StatusCode = 200;
+                return;
+            }
+
             if (type != 1) { context.Response.StatusCode = 400; return; }
 
             uint requestId = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(1, 4));
@@ -109,7 +125,21 @@ internal sealed partial class Http2ServerTransport : IServerTransport
             ctx.MethodName = methodName;
             foreach (var kv in headers) ctx.Headers[kv.Key] = kv.Value;
 
-            await _onRequest(ctx, payload).ConfigureAwait(false);
+            // 注册可被取消的 CTS
+            var requestCts = CancellationTokenSource.CreateLinkedTokenSource(
+                _serverCts?.Token ?? default, context.RequestAborted);
+            _activeRequests[requestId] = requestCts;
+            ctx.CancellationToken = requestCts.Token;
+
+            try
+            {
+                await _onRequest(ctx, payload).ConfigureAwait(false);
+            }
+            finally
+            {
+                _activeRequests.TryRemove(requestId, out _);
+                requestCts.Dispose();
+            }
 
             // 构建响应
             var data = ((ArrayBufferWriter<byte>)ctx.ResponseBuffer).WrittenMemory;

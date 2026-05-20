@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,12 +12,29 @@ namespace PureRpc.Abstractions;
 /// </summary>
 public abstract class AuthorizationHandlerBase : IAuthorizationHandler
 {
+    private static readonly ActivitySource AuthActivitySource = new("PureRpc.Authorization");
+
     public async ValueTask AuthorizeAsync(RpcContext context, string? policy, string? roles, CancellationToken ct)
     {
-        var principal = await ResolvePrincipalAsync(context, ct).ConfigureAwait(false);
+        using var activity = AuthActivitySource.StartActivity("Authorize");
+        activity?.SetTag("rpc.service", context.ServiceName);
+        activity?.SetTag("rpc.method", context.MethodName);
+        if (policy != null) activity?.SetTag("auth.policy", policy);
+        if (roles != null) activity?.SetTag("auth.roles", roles);
+
+        // 优先使用拦截器已设置的 User（如 ServerAuthorizationInterceptor 提前验证了 token）
+        var principal = context.User;
 
         if (principal?.Identity?.IsAuthenticated != true)
+        {
+            principal = await ResolvePrincipalAsync(context, ct).ConfigureAwait(false);
+        }
+
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, "Authentication failed");
             throw new UnauthorizedAccessException("Authentication failed: no valid principal resolved.");
+        }
 
         if (!string.IsNullOrEmpty(roles))
         {
@@ -33,17 +51,24 @@ public abstract class AuthorizationHandlerBase : IAuthorizationHandler
                     }
                 }
                 if (!anyMatch)
+                {
+                    activity?.SetStatus(ActivityStatusCode.Error, "Role check failed");
                     throw new UnauthorizedAccessException(
                         $"Authorization failed: user does not have any of the required roles '{roles}'.");
+                }
             }
         }
 
         if (!string.IsNullOrEmpty(policy))
         {
             if (!await CheckPolicyAsync(principal, policy, ct).ConfigureAwait(false))
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, "Policy check failed");
                 throw new UnauthorizedAccessException($"Authorization failed: policy '{policy}' not satisfied.");
+            }
         }
 
+        activity?.SetStatus(ActivityStatusCode.Ok);
         context.User = principal;
     }
 

@@ -2,7 +2,7 @@ using System;
 
 namespace PureRpc;
 
-[AttributeUsage(AttributeTargets.Interface | AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
+[AttributeUsage(AttributeTargets.Interface | AttributeTargets.Method, AllowMultiple = true, Inherited = true)]
 public sealed class AuthorizeAttribute : Attribute
 {
     public string? Policy { get; }

@@ -39,6 +39,12 @@ public sealed class RpcContext
     /// </summary>
     public Dictionary<string, string> Headers { get; } = new();
 
+    /// <summary>
+    /// 扩展数据字典，用于拦截器与处理器之间的自定义状态传递。
+    /// 生命周期仅限当前请求，请求结束后自动清空。
+    /// </summary>
+    public Dictionary<object, object?> Items { get; } = new();
+
     public RpcContext(IBufferWriter<byte> responseBuffer)
     {
         ResponseBuffer = responseBuffer ?? throw new ArgumentNullException(nameof(responseBuffer));
@@ -64,6 +70,7 @@ public sealed class RpcContext
         IsAborted = false;
         CancellationToken = CancellationToken.None;
         Headers.Clear();
+        Items.Clear();
 
         // Clear 只重置已写入计数，不释放 ArrayBufferWriter 内部数组。
         // 这能减少下次响应的分配，但也可能让大响应后的缓冲区被长期保留。

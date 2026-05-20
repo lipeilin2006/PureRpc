@@ -41,11 +41,11 @@ public sealed class AuthorizeAttributeTests
     }
 
     [Fact]
-    public void AllowMultiple_IsFalse()
+    public void AllowMultiple_IsTrue()
     {
         var usage = (AttributeUsageAttribute)typeof(AuthorizeAttribute)
             .GetCustomAttributes(typeof(AttributeUsageAttribute), false)[0];
-        Assert.False(usage.AllowMultiple);
+        Assert.True(usage.AllowMultiple);
     }
 
     [Fact]

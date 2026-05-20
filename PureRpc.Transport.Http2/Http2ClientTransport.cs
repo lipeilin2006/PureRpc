@@ -64,7 +64,17 @@ internal sealed partial class Http2ClientTransport : IClientTransport
         ParseResponse(responseBytes, _onResponse);
     }
 
-    public ValueTask CancelRequestAsync(uint requestId, CancellationToken ct = default) => default;
+    public async ValueTask CancelRequestAsync(uint requestId, CancellationToken ct = default)
+    {
+        if (_httpClient == null) return;
+        var cancelFrame = new byte[5];
+        cancelFrame[0] = 8;
+        BinaryPrimitives.WriteUInt32LittleEndian(cancelFrame.AsSpan(1), requestId);
+        using var content = new ByteArrayContent(cancelFrame);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        try { await _httpClient.PostAsync("", content, ct).ConfigureAwait(false); }
+        catch { /* best effort */ }
+    }
 
     private static void ParseResponse(byte[] responseBytes,
         Action<uint, ReadOnlySequence<byte>, bool, string?, IReadOnlyDictionary<string, string>?>? cb)

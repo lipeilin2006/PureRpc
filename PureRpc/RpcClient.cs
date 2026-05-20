@@ -1,5 +1,6 @@
 ﻿using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO.Pipelines;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -14,6 +15,7 @@ internal sealed partial class RpcClient : IRpcClient
 
     private readonly IClientTransport _transport;
     private readonly ILogger<RpcClient> _logger;
+    private readonly RpcMetrics _metrics;
 
     // 池化 PendingRequest，复用 IValueTaskSource 消除 TaskCompletionSource 分配
     private readonly ObjectPool<PendingRequest> _pendingPool = new DefaultObjectPool<PendingRequest>(
@@ -51,10 +53,11 @@ internal sealed partial class RpcClient : IRpcClient
 
     public bool IsAvailable => _transport.IsConnected && !_isDisposed;
 
-    public RpcClient(IClientTransport transport, ILogger<RpcClient>? logger = null)
+    public RpcClient(IClientTransport transport, ILogger<RpcClient>? logger = null, RpcMetrics? metrics = null)
     {
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _logger = logger ?? NullLogger<RpcClient>.Instance;
+        _metrics = metrics ?? new RpcMetrics();
     }
 
     #region Source Generated Logging
@@ -116,6 +119,15 @@ internal sealed partial class RpcClient : IRpcClient
             throw new IOException("RPC Client is not available (not connected or disposed).");
         }
 
+        var startTimestamp = Stopwatch.GetTimestamp();
+        var tags = new KeyValuePair<string, object?>[]
+        {
+            new("rpc.service", serviceName),
+            new("rpc.method", methodName),
+        };
+
+        _metrics.ClientRequests.Add(1, tags);
+
         uint requestId = (uint)Interlocked.Increment(ref _nextRequestId);
 
         // 从池取复用 PendingRequest，消除 TCS 分配
@@ -141,6 +153,7 @@ internal sealed partial class RpcClient : IRpcClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            _metrics.ClientErrors.Add(1, tags);
             if (_pendingRequests.TryRemove(requestId, out var leaked))
                 _pendingPool.Return(leaked);
             LogExecutionError(_logger, ex, requestId);
@@ -148,6 +161,8 @@ internal sealed partial class RpcClient : IRpcClient
         }
         finally
         {
+            _metrics.ClientRequestDuration.Record(
+                Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds, tags);
             registration.Dispose();
             // 确保字典清理（已完成或取消的请求）
             if (_pendingRequests.TryRemove(requestId, out var removed))
