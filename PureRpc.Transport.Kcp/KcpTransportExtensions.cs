@@ -1,5 +1,3 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using PureRpc.Abstractions;
 using PureRpc.Transport.Kcp;
 
@@ -12,13 +10,11 @@ public static class KcpTransportExtensions
         ushort port,
         Action<KcpServerOptions>? configure = null)
     {
-        builder.Services.Configure<KcpServerOptions>(options =>
+        return TransportRegistration.AddServerTransport<KcpServerOptions, KcpServerTransport>(builder, options =>
         {
             options.Port = port;
             configure?.Invoke(options);
         });
-        builder.Services.TryAddSingleton<IServerTransport, KcpServerTransport>();
-        return builder;
     }
 
     public static IClientBuilder WithKcpTransport(
@@ -27,13 +23,11 @@ public static class KcpTransportExtensions
         ushort port,
         Action<KcpClientOptions>? configure = null)
     {
-        builder.Services.Configure<KcpClientOptions>(options =>
+        return TransportRegistration.AddClientTransport<KcpClientOptions, KcpClientTransport>(builder, options =>
         {
             options.Host = host;
             options.Port = port;
             configure?.Invoke(options);
         });
-        builder.Services.TryAddSingleton<IClientTransport, KcpClientTransport>();
-        return builder;
     }
 }

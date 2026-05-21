@@ -1,5 +1,3 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using PureRpc.Abstractions;
 using PureRpc.Transport.Websocket;
 
@@ -12,13 +10,11 @@ public static class WebSocketTransportExtensions
         int port,
         Action<WebSocketServerOptions>? configure = null)
     {
-        builder.Services.Configure<WebSocketServerOptions>(options =>
+        return TransportRegistration.AddServerTransport<WebSocketServerOptions, WebSocketServerTransport>(builder, options =>
         {
             options.EndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Any, port);
             configure?.Invoke(options);
         });
-        builder.Services.TryAddSingleton<IServerTransport, WebSocketServerTransport>();
-        return builder;
     }
 
     public static IClientBuilder WithWebSocketTransport(
@@ -26,12 +22,10 @@ public static class WebSocketTransportExtensions
         string url,
         Action<WebSocketClientOptions>? configure = null)
     {
-        builder.Services.Configure<WebSocketClientOptions>(options =>
+        return TransportRegistration.AddClientTransport<WebSocketClientOptions, WebSocketClientTransport>(builder, options =>
         {
             options.Url = url;
             configure?.Invoke(options);
         });
-        builder.Services.TryAddSingleton<IClientTransport, WebSocketClientTransport>();
-        return builder;
     }
 }

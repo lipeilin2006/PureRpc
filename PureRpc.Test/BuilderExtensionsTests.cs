@@ -102,28 +102,6 @@ public sealed class BuilderExtensionsTests
             sd.ImplementationType?.Name == "RpcServerHostedService");
         Assert.True(hasHostedService, "RpcServerHostedService should be registered");
     }
-
-    private sealed class MockServerTransport : IServerTransport
-    {
-        public Task StartAsync(Func<RpcContext, ReadOnlySequence<byte>, Task> onRequestReceived, CancellationToken ct) => Task.CompletedTask;
-        public ValueTask SendResponseAsync(RpcContext context, CancellationToken ct) => default;
-        public ValueTask DisposeAsync() => default;
-    }
-
-    private sealed class MockClientTransport : IClientTransport
-    {
-        public bool IsConnected => true;
-        public Task ConnectAsync(Action<uint, ReadOnlySequence<byte>, bool, string?, IReadOnlyDictionary<string, string>?> onResponseReceived, CancellationToken ct) => Task.CompletedTask;
-        public ValueTask SendAsync(uint requestId, string serviceName, string methodName, ReadOnlySequence<byte> data, CancellationToken ct, IDictionary<string, string>? headers = null) => default;
-        public ValueTask CancelRequestAsync(uint requestId, CancellationToken ct = default) => default;
-        public ValueTask DisposeAsync() => default;
-    }
-
-    private sealed class MockSerializer : ISerializer
-    {
-        public void Serialize<T>(IBufferWriter<byte> writer, T value) { }
-        public T Deserialize<T>(ReadOnlySequence<byte> sequence) => default!;
-    }
 }
 
 public sealed class InterceptorRegistrationTests
@@ -169,18 +147,4 @@ public sealed class InterceptorRegistrationTests
         var result = builder.AddClientInterceptor<NoopClientInterceptor>();
         Assert.Same(builder, result);
     }
-}
-
-internal class NoopServerInterceptor : IRpcServerInterceptor
-{
-    public ValueTask InvokeAsync(RpcContext context, ReadOnlySequence<byte> payload, RpcRequestDelegate next)
-        => next(context, payload);
-}
-
-internal class NoopClientInterceptor : IRpcClientInterceptor
-{
-    public ValueTask<ReadOnlySequence<byte>> InvokeAsync(
-        string serviceName, string methodName, ReadOnlySequence<byte> requestPayload,
-        CancellationToken ct, IDictionary<string, string>? headers, RpcCallDelegate next)
-        => next(serviceName, methodName, requestPayload, ct, headers);
 }

@@ -1,6 +1,7 @@
+using System;
 using System.Net;
 using System.Net.Security;
-using System.Security.Cryptography.X509Certificates;
+using PureRpc.Abstractions;
 
 namespace PureRpc.Transport.Quic;
 
@@ -11,8 +12,5 @@ public class QuicClientOptions
     public TimeSpan ConnectTimeout { get; set; } = TimeSpan.FromSeconds(15);
     public RemoteCertificateValidationCallback? CertificateValidationCallback { get; set; }
 
-    public EndPoint RemoteEndPoint =>
-        IPAddress.TryParse(Host, out var ip)
-            ? new IPEndPoint(ip, Port)
-            : new DnsEndPoint(Host, Port);
+    public EndPoint RemoteEndPoint => EndPointHelper.ResolveEndPoint(Host, Port);
 }

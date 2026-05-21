@@ -1,11 +1,127 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Text;
+using System.Threading;
 
 namespace PureRpc.Abstractions;
 
 public static class RpcFrameCodec
 {
+    public struct ParsedRequest
+    {
+        public uint RequestId;
+        public string ServiceName;
+        public string MethodName;
+        public IReadOnlyDictionary<string, string>? Headers;
+    }
+
+    public struct ParsedResponse
+    {
+        public uint RequestId;
+        public byte Type;
+        public int StatusCode;
+        public IReadOnlyDictionary<string, string>? Headers;
+        public ReadOnlySequence<byte> Payload;
+    }
+
+    public static bool TryParseRequest(ref ReadOnlySequence<byte> buffer, long connectionId,
+        ConcurrentDictionary<(long, uint), CancellationTokenSource> activeRequests,
+        out ParsedRequest request, out ReadOnlySequence<byte> payload)
+    {
+        request = default;
+        payload = default;
+        if (buffer.Length < 9) return false;
+
+        Span<byte> headSpan = stackalloc byte[9];
+        buffer.Slice(0, 9).CopyTo(headSpan);
+        int totalLen = BinaryPrimitives.ReadInt32LittleEndian(headSpan[..4]);
+
+        if (totalLen < 5 || totalLen > RpcProtocolConstants.MaxFrameSize) return false;
+        if (buffer.Length < totalLen + 4U) return false;
+
+        byte type = headSpan[4];
+        uint reqId = BinaryPrimitives.ReadUInt32LittleEndian(headSpan.Slice(5, 4));
+
+        if (type == (byte)RpcMessageType.Cancel)
+        {
+            var key = (connectionId, reqId);
+            if (activeRequests.TryRemove(key, out var cts))
+            {
+                cts.Cancel();
+                cts.Dispose();
+            }
+            buffer = buffer.Slice(totalLen + 4);
+            return false;
+        }
+
+        if (type != (byte)RpcMessageType.Request)
+        {
+            buffer = buffer.Slice(totalLen + 4);
+            return false;
+        }
+
+        if (totalLen < 13) return false;
+
+        var reader = new SequenceReader<byte>(buffer.Slice(9, totalLen - 5));
+
+        if (!TryReadString(ref reader, out var svc, RpcProtocolConstants.MaxServiceNameLength)) return false;
+        if (!TryReadString(ref reader, out var met, RpcProtocolConstants.MaxMethodNameLength)) return false;
+
+        if (!reader.TryReadLittleEndian(out int headerCount)) return false;
+        if (!TryParseHeadersSequence(ref reader, headerCount, out var headers)) return false;
+
+        request = new ParsedRequest { RequestId = reqId, ServiceName = svc, MethodName = met, Headers = headers };
+        payload = reader.UnreadSequence;
+        buffer = buffer.Slice(totalLen + 4);
+        return true;
+    }
+
+    public static bool TryParseResponse(ref ReadOnlySequence<byte> buffer, out ParsedResponse response)
+    {
+        response = default;
+        if (buffer.Length < 17) return false;
+
+        Span<byte> headSpan = stackalloc byte[17];
+        buffer.Slice(0, 17).CopyTo(headSpan);
+
+        int totalLen = BinaryPrimitives.ReadInt32LittleEndian(headSpan[..4]);
+        if (totalLen < 13 || buffer.Length < totalLen + 4) return false;
+
+        byte type = headSpan[4];
+        uint requestId = BinaryPrimitives.ReadUInt32LittleEndian(headSpan.Slice(5, 4));
+        int statusCode = BinaryPrimitives.ReadInt32LittleEndian(headSpan.Slice(9, 4));
+        int headerCount = BinaryPrimitives.ReadInt32LittleEndian(headSpan.Slice(13, 4));
+        if (headerCount < 0 || headerCount > RpcProtocolConstants.MaxHeaderCount) return false;
+
+        var remaining = buffer.Slice(17, totalLen - 13);
+        IReadOnlyDictionary<string, string>? headers = null;
+        ReadOnlySequence<byte> payload;
+
+        if (headerCount > 0)
+        {
+            var seqReader = new SequenceReader<byte>(remaining);
+            if (!TryParseHeadersSequence(ref seqReader, headerCount, out var dict)) return false;
+            headers = dict;
+            payload = remaining.Slice(seqReader.Consumed);
+        }
+        else
+        {
+            payload = remaining;
+        }
+
+        response = new ParsedResponse
+        {
+            RequestId = requestId,
+            Type = type,
+            StatusCode = statusCode,
+            Headers = headers,
+            Payload = payload
+        };
+        buffer = buffer.Slice(totalLen + 4);
+        return true;
+    }
+
     public static bool TryReadString(ref SequenceReader<byte> reader, out string result, int maxLength = int.MaxValue)
     {
         result = string.Empty;

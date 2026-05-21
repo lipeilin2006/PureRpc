@@ -74,7 +74,7 @@ Console.WriteLine(result); // 3
 | `PureRpc.Transport.Websocket` | WebSocket via `HttpListener` | ✗ | ✔ |
 | `PureRpc.Transport.Kcp` | Reliable UDP (custom KCP) | ✗ | ✔ |
 | `PureRpc.Transport.Http2` | HTTP/2 via ASP.NET Core Kestrel | ✔ | ✔ |
-| `PureRpc.Transport.Http3` | HTTP/3 (QUIC) via ASP.NET Core Kestrel (TLS required) | ✔ | ✔ |
+| `PureRpc.Transport.Quic` | QUIC (`System.Net.Quic`, TLS 1.3 required) | ✔ | ✔ |
 
 ## Serializers
 

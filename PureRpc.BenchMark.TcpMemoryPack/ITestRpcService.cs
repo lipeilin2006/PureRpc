@@ -1,7 +1,7 @@
 ﻿using MemoryPack;
 using PureRpc.Abstractions;
 
-namespace PureRpc.BenchMark
+namespace PureRpc.BenchMark.TcpMemoryPack
 {
     [MemoryPackable]
     public partial struct TestRequest(int a, int b)

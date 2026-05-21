@@ -5,21 +5,16 @@ using PureRpc.Abstractions;
 
 namespace PureRpc;
 
-/// <summary>
-/// 将 PureRpcServer 集成到 .NET 通用主机的托管服务。
-/// 负责在应用启动时开启 RPC 监听，并在应用停止时释放资源。
-/// </summary>
-internal sealed partial class RpcServerHostedService : IHostedService
+internal sealed partial class RpcServerHostedService : RpcHostedServiceBase
 {
     private readonly IRpcServer _server;
-    private readonly ILogger<RpcServerHostedService> _logger;
 
     public RpcServerHostedService(
         IRpcServer server,
         ILogger<RpcServerHostedService> logger)
+        : base(logger)
     {
         _server = server ?? throw new ArgumentNullException(nameof(server));
-        _logger = logger ?? NullLogger<RpcServerHostedService>.Instance;
     }
 
     #region Source Generated Logging
@@ -36,9 +31,9 @@ internal sealed partial class RpcServerHostedService : IHostedService
     private static partial void LogCriticalCrash(ILogger logger, Exception ex);
     #endregion
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        LogServiceStarting(_logger);
+        LogServiceStarting(Logger);
 
         var serverTask = Task.Run(async () =>
         {
@@ -48,16 +43,14 @@ internal sealed partial class RpcServerHostedService : IHostedService
             }
             catch (OperationCanceledException)
             {
-                LogListeningCanceled(_logger);
+                LogListeningCanceled(Logger);
             }
             catch (Exception ex)
             {
-                LogCriticalCrash(_logger, ex);
+                LogCriticalCrash(Logger, ex);
             }
         }, cancellationToken);
 
-        // Non-blocking transports (HTTP/2 via WebApplication) start quickly.
-        // Blocking transports (TCP loop, KCP tick) run indefinitely — don't wait for them.
         var timeout = Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         var completed = await Task.WhenAny(serverTask, timeout).ConfigureAwait(false);
         if (completed == serverTask)
@@ -66,11 +59,9 @@ internal sealed partial class RpcServerHostedService : IHostedService
         }
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        LogServiceStopping(_logger);
-
-        // 触发优雅退出，关闭所有活跃连接并停止监听 Socket
+        LogServiceStopping(Logger);
         await _server.DisposeAsync();
     }
 }

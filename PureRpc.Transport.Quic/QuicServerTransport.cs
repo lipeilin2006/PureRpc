@@ -108,13 +108,13 @@ internal sealed partial class QuicServerTransport : IServerTransport
                 ReadResult result = await reader.ReadAsync(ct).ConfigureAwait(false);
                 var buffer = result.Buffer;
 
-                while (TryParseRequest(ref buffer, connId, out var header, out var payload))
+                while (RpcFrameCodec.TryParseRequest(ref buffer, connId, _activeRequests, out var request, out var payload))
                 {
                     var context = _contextPool.Get();
-                    context.PopulateRequest(connId, header.RequestId, header.ServiceName, header.MethodName, remoteEP, header.Headers);
+                    context.PopulateRequest(connId, request.RequestId, request.ServiceName, request.MethodName, remoteEP, request.Headers);
 
                     var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    var key = (connId, header.RequestId);
+                    var key = (connId, request.RequestId);
                     _activeRequests[key] = requestCts;
                     context.CancellationToken = requestCts.Token;
 
@@ -205,53 +205,6 @@ internal sealed partial class QuicServerTransport : IServerTransport
         {
             locker.Release();
         }
-    }
-
-    private bool TryParseRequest(ref ReadOnlySequence<byte> buffer, long connectionId,
-        out (uint RequestId, string ServiceName, string MethodName, IReadOnlyDictionary<string, string>? Headers) header,
-        out ReadOnlySequence<byte> payload)
-    {
-        header = default; payload = default;
-        if (buffer.Length < 9) return false;
-
-        Span<byte> headSpan = stackalloc byte[9];
-        buffer.Slice(0, 9).CopyTo(headSpan);
-        int totalLen = BinaryPrimitives.ReadInt32LittleEndian(headSpan[..4]);
-
-        if (totalLen < 5 || totalLen > RpcProtocolConstants.MaxFrameSize) return false;
-        if (buffer.Length < totalLen + 4U) return false;
-
-        byte type = headSpan[4];
-        uint reqId = BinaryPrimitives.ReadUInt32LittleEndian(headSpan.Slice(5, 4));
-
-        if (type == (byte)RpcMessageType.Cancel)
-        {
-            var key = (connectionId, reqId);
-            if (_activeRequests.TryRemove(key, out var cts))
-            {
-                cts.Cancel();
-                cts.Dispose();
-            }
-            buffer = buffer.Slice(totalLen + 4);
-            return false;
-        }
-
-        if (type != (byte)RpcMessageType.Request) { buffer = buffer.Slice(totalLen + 4); return false; }
-
-        if (totalLen < 13) return false;
-
-        var reader = new SequenceReader<byte>(buffer.Slice(9, totalLen - 5));
-
-        if (!RpcFrameCodec.TryReadString(ref reader, out var svc, RpcProtocolConstants.MaxServiceNameLength)) return false;
-        if (!RpcFrameCodec.TryReadString(ref reader, out var met, RpcProtocolConstants.MaxMethodNameLength)) return false;
-
-        if (!reader.TryReadLittleEndian(out int headerCount)) return false;
-        if (!RpcFrameCodec.TryParseHeadersSequence(ref reader, headerCount, out var headers)) return false;
-
-        header = (reqId, svc, met, headers);
-        payload = reader.UnreadSequence;
-        buffer = buffer.Slice(totalLen + 4);
-        return true;
     }
 
     public async ValueTask DisposeAsync()

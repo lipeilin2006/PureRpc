@@ -6,10 +6,6 @@ using PureRpc.Abstractions;
 
 namespace PureRpc.Test;
 
-// ============================================================
-// AuthorizeAttribute & AllowAnonymousAttribute unit tests
-// ============================================================
-
 public sealed class AuthorizeAttributeTests
 {
     [Fact]
@@ -77,60 +73,6 @@ public sealed class AllowAnonymousAttributeTests
     }
 }
 
-// ============================================================
-// Dispatcher-level authorization integration tests
-// ============================================================
-
-internal sealed class TestAuthorizationHandler : IAuthorizationHandler
-{
-    public bool ShouldSucceed = true;
-    public int CallCount;
-    public string? ReceivedPolicy;
-    public string? ReceivedRoles;
-    public RpcContext? ReceivedContext;
-    public ClaimsPrincipal? UserToSet;
-
-    public ValueTask AuthorizeAsync(RpcContext context, string? policy, string? roles, CancellationToken ct)
-    {
-        CallCount++;
-        ReceivedPolicy = policy;
-        ReceivedRoles = roles;
-        ReceivedContext = context;
-        if (!ShouldSucceed)
-            throw new RpcException("Authorization failed.");
-        if (UserToSet != null)
-            context.User = UserToSet;
-        return default;
-    }
-}
-
-internal sealed class MockServerTransport : IServerTransport
-{
-    public Task StartAsync(Func<RpcContext, ReadOnlySequence<byte>, Task> onRequestReceived, CancellationToken ct)
-        => Task.CompletedTask;
-    public ValueTask SendResponseAsync(RpcContext context, CancellationToken ct) => default;
-    public ValueTask DisposeAsync() => default;
-}
-
-/// <summary>
-/// Concrete AuthorizationHandlerBase for testing — resolves principal from a delegate.
-/// </summary>
-internal sealed class ClaimsAuthHandler : AuthorizationHandlerBase
-{
-    private readonly Func<RpcContext, CancellationToken, ValueTask<ClaimsPrincipal?>> _resolver;
-
-    public ClaimsAuthHandler(Func<RpcContext, CancellationToken, ValueTask<ClaimsPrincipal?>> resolver)
-    {
-        _resolver = resolver;
-    }
-
-    public ClaimsAuthHandler(Func<RpcContext, ClaimsPrincipal?> resolver)
-        : this((ctx, _) => new ValueTask<ClaimsPrincipal?>(resolver(ctx))) { }
-
-    protected override ValueTask<ClaimsPrincipal?> ResolvePrincipalAsync(RpcContext context, CancellationToken ct)
-        => _resolver(context, ct);
-}
-
 public sealed class AuthorizationFlowTests
 {
     private readonly byte[] _pingPayload;
@@ -139,8 +81,6 @@ public sealed class AuthorizationFlowTests
     {
         _pingPayload = MemoryPackSerializer.Serialize(new PingRequest("hello"));
     }
-
-    // ---- Helpers ----
 
     private ServiceProvider BuildServer(TestAuthorizationHandler? handler = null)
     {
@@ -170,8 +110,6 @@ public sealed class AuthorizationFlowTests
 
         return MemoryPackSerializer.Deserialize<string>(buffer.WrittenSpan);
     }
-
-    // ---- Service-level [Authorize] ----
 
     [Fact]
     public async Task ServiceAuth_HandlerAccepts_Succeeds()
@@ -208,8 +146,6 @@ public sealed class AuthorizationFlowTests
             DispatchAndReadAsync(dispatcher, "Ping"));
         Assert.Contains("IAuthorizationHandler", ex.Message);
     }
-
-    // ---- Method-level [Authorize] (MixedAuthService) ----
 
     [Fact]
     public async Task MixedAuth_PublicMethod_SucceedsWithoutHandler()
@@ -259,8 +195,6 @@ public sealed class AuthorizationFlowTests
         Assert.Equal(0, handler.CallCount);
     }
 
-    // ---- [AllowAnonymous] override (AllowAnonService) ----
-
     [Fact]
     public async Task AllowAnon_PublicMethod_SucceedsWithoutHandler()
     {
@@ -309,8 +243,6 @@ public sealed class AuthorizationFlowTests
         Assert.Equal(1, handler.CallCount);
     }
 
-    // ---- Policy verification ----
-
     [Fact]
     public async Task ServiceAuth_HandlerReceivesNullPolicy()
     {
@@ -347,8 +279,6 @@ public sealed class AuthorizationFlowTests
         Assert.Equal("admin", handler.ReceivedPolicy);
     }
 
-    // ---- Context delivery ----
-
     [Fact]
     public async Task ServiceAuth_HandlerReceivesContext()
     {
@@ -361,8 +291,6 @@ public sealed class AuthorizationFlowTests
         Assert.NotNull(handler.ReceivedContext);
         Assert.Equal("Ping", handler.ReceivedContext!.MethodName);
     }
-
-    // ---- User propagation (RpcContext.User / ServiceBase.User) ----
 
     [Fact]
     public async Task ServiceAuth_HandlerSetsUser_ServiceReadsIt()
@@ -393,10 +321,6 @@ public sealed class AuthorizationFlowTests
         Assert.Equal("anonymous", result);
     }
 }
-
-// ============================================================
-// AuthorizationHandlerBase integration tests
-// ============================================================
 
 public sealed class AuthorizationHandlerBaseTests
 {
@@ -438,7 +362,7 @@ public sealed class AuthorizationHandlerBaseTests
     [Fact]
     public async Task ResolvePrincipal_Unauthenticated_ThrowsUnauthorizedAccess()
     {
-        var principal = new ClaimsPrincipal(new ClaimsIdentity()); // no authentication
+        var principal = new ClaimsPrincipal(new ClaimsIdentity());
         var handler = new ClaimsAuthHandler(_ => principal);
         using var sp = BuildServer(handler);
         var dispatcher = GetDispatcher(sp);
@@ -481,8 +405,6 @@ public sealed class AuthorizationHandlerBaseTests
 
         Assert.Equal("carol|", result);
     }
-
-    // ---- Multi-role (OR logic) ----
 
     private ServiceProvider BuildMultiRoleServer(AuthorizationHandlerBase handler)
     {
@@ -578,8 +500,6 @@ public sealed class AuthorizationHandlerBaseTests
         Assert.Contains("any of the required roles", ex.Message);
     }
 
-    // ---- DelegatingAuthorizationHandler ----
-
     [Fact]
     public async Task DelegatingHandler_AsyncResolver_Succeeds()
     {
@@ -619,10 +539,6 @@ public sealed class AuthorizationHandlerBaseTests
         Assert.Equal("eve|user", result);
     }
 }
-
-// ============================================================
-// AuthorizationExtensions DI integration tests
-// ============================================================
 
 public sealed class AuthorizationExtensionsTests
 {
@@ -696,14 +612,5 @@ public sealed class AuthorizationExtensionsTests
 
         var result = MemoryPackSerializer.Deserialize<string>(buffer.WrittenSpan);
         Assert.Equal("from-header|user", result);
-    }
-}
-
-internal sealed class TestAuthHandler : IAuthorizationHandler
-{
-    public ValueTask AuthorizeAsync(RpcContext context, string? policy, string? roles, CancellationToken ct)
-    {
-        context.User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, "test") }, "test"));
-        return default;
     }
 }

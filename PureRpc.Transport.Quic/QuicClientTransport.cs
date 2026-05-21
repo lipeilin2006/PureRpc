@@ -116,11 +116,11 @@ internal sealed partial class QuicClientTransport : IClientTransport
                 ReadResult result = await reader.ReadAsync(_transportCts.Token).ConfigureAwait(false);
                 var buffer = result.Buffer;
 
-                while (TryParseResponse(ref buffer, out var requestId, out var type, out var statusCode, out var headers, out var payload))
+                while (RpcFrameCodec.TryParseResponse(ref buffer, out var response))
                 {
-                    bool isSuccess = type != (byte)RpcMessageType.Error && statusCode == 200;
-                    string? errorMsg = isSuccess ? null : RpcFrameCodec.DecodeUtf8(payload);
-                    onResponseReceived(requestId, payload, isSuccess, errorMsg, headers);
+                    bool isSuccess = response.Type != (byte)RpcMessageType.Error && response.StatusCode == 200;
+                    string? errorMsg = isSuccess ? null : RpcFrameCodec.DecodeUtf8(response.Payload);
+                    onResponseReceived(response.RequestId, response.Payload, isSuccess, errorMsg, response.Headers);
                 }
 
                 reader.AdvanceTo(buffer.Start, buffer.End);
@@ -137,42 +137,6 @@ internal sealed partial class QuicClientTransport : IClientTransport
             await reader.CompleteAsync().ConfigureAwait(false);
             LogConnectionLost(_logger);
         }
-    }
-
-    private bool TryParseResponse(ref ReadOnlySequence<byte> buffer, out uint requestId,
-        out byte type, out int statusCode, out IReadOnlyDictionary<string, string>? headers,
-        out ReadOnlySequence<byte> payload)
-    {
-        requestId = 0; type = 0; statusCode = 0; headers = null; payload = default;
-        if (buffer.Length < 17) return false;
-
-        Span<byte> headSpan = stackalloc byte[17];
-        buffer.Slice(0, 17).CopyTo(headSpan);
-
-        int totalLen = BinaryPrimitives.ReadInt32LittleEndian(headSpan[..4]);
-        if (totalLen < 13 || buffer.Length < totalLen + 4) return false;
-
-        type = headSpan[4];
-        requestId = BinaryPrimitives.ReadUInt32LittleEndian(headSpan.Slice(5, 4));
-        statusCode = BinaryPrimitives.ReadInt32LittleEndian(headSpan.Slice(9, 4));
-        int headerCount = BinaryPrimitives.ReadInt32LittleEndian(headSpan.Slice(13, 4));
-        if (headerCount < 0 || headerCount > RpcProtocolConstants.MaxHeaderCount) return false;
-
-        var remaining = buffer.Slice(17, totalLen - 13);
-        if (headerCount > 0)
-        {
-            var seqReader = new SequenceReader<byte>(remaining);
-            if (!RpcFrameCodec.TryParseHeadersSequence(ref seqReader, headerCount, out var dict)) return false;
-            headers = dict;
-            payload = remaining.Slice(seqReader.Consumed);
-        }
-        else
-        {
-            payload = remaining;
-        }
-
-        buffer = buffer.Slice(totalLen + 4);
-        return true;
     }
 
     public async ValueTask CancelRequestAsync(uint requestId, CancellationToken ct = default)

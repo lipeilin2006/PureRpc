@@ -2,7 +2,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using PureRpc;
-using PureRpc.BenchMark;
+using PureRpc.BenchMark.TcpMemoryPack;
 using System.Diagnostics;
 
 // ==========================================

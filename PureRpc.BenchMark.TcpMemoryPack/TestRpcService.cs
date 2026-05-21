@@ -1,5 +1,5 @@
 ﻿using PureRpc.Abstractions;
-using PureRpc.BenchMark;
+using PureRpc.BenchMark.TcpMemoryPack;
 
 internal class TestRpcService : ServiceBase, ITestRpcService
 {
