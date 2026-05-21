@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <NoWarn>CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,7 +17,7 @@
     <ProjectReference Include="..\PureRpc.Generator\PureRpc.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\PureRpc.Serialization.MemoryPack\PureRpc.Serialization.MemoryPack.csproj" />
     <ProjectReference Include="..\PureRpc.Transport.Tcp\PureRpc.Transport.Tcp.csproj" />
-    <ProjectReference Include="..\PureRpc.Transport.Kcp\PureRpc.Transport.Kcp.csproj" />
+
     <ProjectReference Include="..\PureRpc\PureRpc.csproj" />
   </ItemGroup>
 

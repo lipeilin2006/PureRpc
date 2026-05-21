@@ -12,7 +12,7 @@ var serverBuilder = Host.CreateApplicationBuilder(args);
 // 压测默认关闭日志，避免 Console I/O 干扰吞吐和时延结果。
 serverBuilder.Logging.ClearProviders();
 serverBuilder.Services.AddPureRpcServer()
-    .WithKcpTransport(5010)
+    .WithTcpTransport(5010)
     .WithMemoryPackSerializer()
     .WithTestRpcService<TestRpcService>();
 using var serverHost = serverBuilder.Build();
@@ -21,7 +21,7 @@ await serverHost.StartAsync();
 var clientBuilder = Host.CreateApplicationBuilder(args);
 clientBuilder.Logging.ClearProviders();
 clientBuilder.Services.AddPureRpcClient()
-    .WithKcpTransport("127.0.0.1", 5010)
+    .WithTcpTransport("127.0.0.1", 5010)
     .WithMemoryPackSerializer()
     .WithTestRpcServiceProxy();
 using var clientHost = clientBuilder.Build();
