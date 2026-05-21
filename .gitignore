@@ -432,3 +432,4 @@ FodyWeavers.xsd
 thesis_output/
 generate_thesis.py
 generate_ppt.py
+generate_charts.py

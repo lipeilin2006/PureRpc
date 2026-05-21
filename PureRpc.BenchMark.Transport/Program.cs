@@ -17,7 +17,7 @@ if (args.Length > 0)
 
 var results = new List<(string Name, double Qps)>();
 
-var transports = new[] { "TCP", "KCP", "WebSocket", "HTTP/2", "HTTP/3" };
+var transports = new[] { "TCP", "KCP", "WebSocket", "HTTP/2", "QUIC" };
 foreach (var name in transports)
 {
     var psi = new ProcessStartInfo
@@ -64,8 +64,8 @@ async Task RunSingle(string name)
                         c => c.WithWebSocketTransport("ws://127.0.0.1:5033/rpc")),
         "HTTP/2" => (s => s.WithHttp2Transport(5034),
                      c => c.WithHttp2Transport("http://127.0.0.1:5034/rpc")),
-        "HTTP/3" => (s => s.WithHttp3Transport(5035),
-                     c => c.WithHttp3Transport("https://127.0.0.1:5035/rpc", o => o.ServerCertificateValidation = (_, _, _, _) => true)),
+        "QUIC" => (s => s.WithQuicTransport(5035, o => o.ServerCertificatePath = "/tmp/devcert.pfx"),
+                    c => c.WithQuicTransport("127.0.0.1", 5035)),
         _ => throw new ArgumentException($"Unknown transport: {name}"),
     };
 

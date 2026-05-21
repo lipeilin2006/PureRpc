@@ -16,7 +16,7 @@
     <ProjectReference Include="..\PureRpc.Transport.Kcp\PureRpc.Transport.Kcp.csproj" />
     <ProjectReference Include="..\PureRpc.Transport.Websocket\PureRpc.Transport.Websocket.csproj" />
     <ProjectReference Include="..\PureRpc.Transport.Http2\PureRpc.Transport.Http2.csproj" />
-    <ProjectReference Include="..\PureRpc.Transport.Http3\PureRpc.Transport.Http3.csproj" />
+    <ProjectReference Include="..\PureRpc.Transport.Quic\PureRpc.Transport.Quic.csproj" />
     <ProjectReference Include="..\PureRpc\PureRpc.csproj" />
   </ItemGroup>
 

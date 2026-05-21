@@ -1,10 +1,8 @@
 ﻿using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.IO.Pipelines;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.ObjectPool;
 using PureRpc.Abstractions;
 
 namespace PureRpc;
@@ -17,9 +15,6 @@ internal sealed partial class RpcClient : IRpcClient
     private readonly ILogger<RpcClient> _logger;
     private readonly RpcMetrics _metrics;
 
-    // 池化 PendingRequest，复用 IValueTaskSource 消除 TaskCompletionSource 分配
-    private readonly ObjectPool<PendingRequest> _pendingPool = new DefaultObjectPool<PendingRequest>(
-        new DefaultPooledObjectPolicy<PendingRequest>(), InitialPendingRequestCapacity);
     private readonly ConcurrentDictionary<uint, PendingRequest> _pendingRequests =
         new(Environment.ProcessorCount, InitialPendingRequestCapacity);
 
@@ -130,9 +125,7 @@ internal sealed partial class RpcClient : IRpcClient
 
         uint requestId = (uint)Interlocked.Increment(ref _nextRequestId);
 
-        // 从池取复用 PendingRequest，消除 TCS 分配
-        var pending = _pendingPool.Get();
-        pending.Reset();
+        var pending = new PendingRequest();
         _pendingRequests[requestId] = pending;
 
         using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -148,14 +141,11 @@ internal sealed partial class RpcClient : IRpcClient
 
             await _transport.SendAsync(requestId, serviceName, methodName, requestPayload, linkedCts.Token, mergedHeaders).ConfigureAwait(false);
 
-            // 返回 ValueTask 绑定到池化 PendingRequest，避免 Task 分配
             return await pending.AsValueTask().ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _metrics.ClientErrors.Add(1, tags);
-            if (_pendingRequests.TryRemove(requestId, out var leaked))
-                _pendingPool.Return(leaked);
             LogExecutionError(_logger, ex, requestId);
             throw;
         }
@@ -165,8 +155,7 @@ internal sealed partial class RpcClient : IRpcClient
                 Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds, tags);
             registration.Dispose();
             // 确保字典清理（已完成或取消的请求）
-            if (_pendingRequests.TryRemove(requestId, out var removed))
-                _pendingPool.Return(removed);
+            _pendingRequests.TryRemove(requestId, out _);
         }
     }
 
@@ -197,7 +186,6 @@ internal sealed partial class RpcClient : IRpcClient
             {
                 pending.SetException(new RpcException(error ?? "Unknown remote error."));
             }
-            _pendingPool.Return(pending);
         }
     }
 
@@ -221,7 +209,6 @@ internal sealed partial class RpcClient : IRpcClient
         foreach (var pending in _pendingRequests.Values)
         {
             pending.SetException(exception);
-            _pendingPool.Return(pending);
         }
         _pendingRequests.Clear();
     }

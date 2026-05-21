@@ -36,19 +36,15 @@ internal sealed partial class RpcServerHostedService : IHostedService
     private static partial void LogCriticalCrash(ILogger logger, Exception ex);
     #endregion
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
         LogServiceStarting(_logger);
 
-        // 启动服务器处理循环。
-        // 由于 StartAsync 内部是长连接监听（While 循环），
-        // 必须在后台任务中运行，以防阻塞 Host 的启动流水线。
-        _ = Task.Run(async () =>
+        var serverTask = Task.Run(async () =>
         {
             try
             {
-                // 此时 Server 内部的 Transport 会自动应用通过 IOptions 配置的监听地址
-                await _server.StartAsync(cancellationToken);
+                await _server.StartAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -60,7 +56,14 @@ internal sealed partial class RpcServerHostedService : IHostedService
             }
         }, cancellationToken);
 
-        return Task.CompletedTask;
+        // Non-blocking transports (HTTP/2 via WebApplication) start quickly.
+        // Blocking transports (TCP loop, KCP tick) run indefinitely — don't wait for them.
+        var timeout = Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+        var completed = await Task.WhenAny(serverTask, timeout).ConfigureAwait(false);
+        if (completed == serverTask)
+        {
+            await serverTask.ConfigureAwait(false);
+        }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
