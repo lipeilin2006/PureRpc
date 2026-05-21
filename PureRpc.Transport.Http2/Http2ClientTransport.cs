@@ -29,13 +29,11 @@ internal sealed partial class Http2ClientTransport : IClientTransport
         CancellationToken ct)
     {
         _onResponse = onResponseReceived;
-        // H9: 断开旧连接
         _httpClient?.Dispose();
 
         var handler = new HttpClientHandler();
         if (_options.ServerCertificateValidation != null)
             handler.ServerCertificateCustomValidationCallback = _options.ServerCertificateValidation;
-        // 默认不验证（开发环境）；生产环境应设置 options.ServerCertificateValidation
         _httpClient = new HttpClient(handler)
         {
             BaseAddress = new Uri(_options.Url),
@@ -53,27 +51,52 @@ internal sealed partial class Http2ClientTransport : IClientTransport
     {
         if (_httpClient == null) throw new IOException("HTTP/2 client is not connected.");
 
-        var requestBytes = BuildFrame(requestId, serviceName, methodName, data, headers);
-        using var content = new ByteArrayContent(requestBytes);
-        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        int svcByteCount = Encoding.UTF8.GetByteCount(serviceName);
+        int metByteCount = Encoding.UTF8.GetByteCount(methodName);
+        var headerInfo = RpcFrameCodec.PrepareHeaders(headers as IReadOnlyDictionary<string, string>);
 
-        var response = await _httpClient.PostAsync("", content, ct).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        int bodyLen = 1 + 4 + 4 + svcByteCount + 4 + metByteCount + 4 + headerInfo.HeadersBlockSize + (int)data.Length;
+        byte[] rented = ArrayPool<byte>.Shared.Rent(bodyLen);
+        try
+        {
+            int written = RpcFrameCodec.WriteRequestSpan(rented, requestId, serviceName, methodName, in headerInfo, svcByteCount, metByteCount);
+            if (data.Length > 0)
+            {
+                if (data.IsSingleSegment) data.FirstSpan.CopyTo(rented.AsSpan(written));
+                else foreach (var seg in data) { seg.Span.CopyTo(rented.AsSpan(written)); written += seg.Length; }
+            }
 
-        var responseBytes = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
-        ParseResponse(responseBytes, _onResponse);
+            using var content = new ByteArrayContent(rented, 0, bodyLen);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+
+            var response = await _httpClient.PostAsync("", content, ct).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            var responseBytes = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+            ParseResponse(responseBytes, _onResponse);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     public async ValueTask CancelRequestAsync(uint requestId, CancellationToken ct = default)
     {
         if (_httpClient == null) return;
-        var cancelFrame = new byte[5];
-        cancelFrame[0] = 8;
-        BinaryPrimitives.WriteUInt32LittleEndian(cancelFrame.AsSpan(1), requestId);
-        using var content = new ByteArrayContent(cancelFrame);
-        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
-        try { await _httpClient.PostAsync("", content, ct).ConfigureAwait(false); }
-        catch { /* best effort */ }
+        byte[] rented = ArrayPool<byte>.Shared.Rent(5);
+        try
+        {
+            RpcFrameCodec.WriteCancelSpan(rented, requestId);
+            using var content = new ByteArrayContent(rented, 0, 5);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+            try { await _httpClient.PostAsync("", content, ct).ConfigureAwait(false); }
+            catch { }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     private static void ParseResponse(byte[] responseBytes,
@@ -89,70 +112,12 @@ internal sealed partial class Http2ClientTransport : IClientTransport
         IReadOnlyDictionary<string, string>? respHeaders = null;
         if (headerCount > 0)
         {
-            var dict = new Dictionary<string, string>(headerCount);
-            for (int i = 0; i < headerCount; i++)
-            {
-                int keyLen = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, 4));
-                offset += 4;
-                string key = Encoding.UTF8.GetString(span.Slice(offset, keyLen));
-                offset += keyLen;
-                int valLen = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, 4));
-                offset += 4;
-                string val = Encoding.UTF8.GetString(span.Slice(offset, valLen));
-                offset += valLen;
-                dict[key] = val;
-            }
+            if (!RpcFrameCodec.TryParseHeadersSpan(span, ref offset, headerCount, out var dict)) return;
             respHeaders = dict;
         }
-        bool isSuccess = type != 3 && statusCode == 200;
-        var payload = new ReadOnlySequence<byte>(span.Slice(offset).ToArray());
+        bool isSuccess = type != (byte)RpcMessageType.Error && statusCode == 200;
+        var payload = new ReadOnlySequence<byte>(responseBytes, offset, responseBytes.Length - offset);
         cb(respId, payload, isSuccess, isSuccess ? null : Encoding.UTF8.GetString(span.Slice(offset)), respHeaders);
-    }
-
-    private static byte[] BuildFrame(uint requestId, string serviceName, string methodName,
-        ReadOnlySequence<byte> data, IDictionary<string, string>? headers)
-    {
-        int svc = Encoding.UTF8.GetByteCount(serviceName);
-        int met = Encoding.UTF8.GetByteCount(methodName);
-        int hc = headers?.Count ?? 0;
-        int hbs = 0;
-        string[]? k = null, v = null;
-        int[]? ks = null, vs = null;
-        if (hc > 0)
-        {
-            k = new string[hc]; v = new string[hc]; ks = new int[hc]; vs = new int[hc];
-            int i = 0;
-            foreach (var kv in headers!)
-            {
-                k[i] = kv.Key; v[i] = kv.Value;
-                ks[i] = Encoding.UTF8.GetByteCount(kv.Key);
-                vs[i] = Encoding.UTF8.GetByteCount(kv.Value);
-                hbs += 4 + ks[i] + 4 + vs[i]; i++;
-            }
-        }
-        int len = 1 + 4 + 4 + svc + 4 + met + 4 + hbs + (int)data.Length;
-        var buf = new byte[len];
-        buf[0] = 1;
-        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(1, 4), requestId);
-        BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(5, 4), svc);
-        int p = 9;
-        Encoding.UTF8.GetBytes(serviceName, buf.AsSpan(p, svc)); p += svc;
-        BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(p, 4), met); p += 4;
-        Encoding.UTF8.GetBytes(methodName, buf.AsSpan(p, met)); p += met;
-        BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(p, 4), hc); p += 4;
-        for (int i = 0; i < hc; i++)
-        {
-            BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(p, 4), ks![i]); p += 4;
-            Encoding.UTF8.GetBytes(k![i], buf.AsSpan(p, ks[i])); p += ks[i];
-            BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(p, 4), vs![i]); p += 4;
-            Encoding.UTF8.GetBytes(v![i], buf.AsSpan(p, vs[i])); p += vs[i];
-        }
-        if (data.Length > 0)
-        {
-            if (data.IsSingleSegment) data.FirstSpan.CopyTo(buf.AsSpan(p));
-            else foreach (var seg in data) { seg.Span.CopyTo(buf.AsSpan(p)); p += seg.Length; }
-        }
-        return buf;
     }
 
     public async ValueTask DisposeAsync()

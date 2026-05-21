@@ -5,6 +5,11 @@ namespace PureRpc.Abstractions
 {
     public sealed class RpcContextPolicy : IPooledObjectPolicy<RpcContext>
     {
+        public static ObjectPool<RpcContext> CreatePool(int maxRetained = RpcProtocolConstants.DefaultObjectPoolMaxRetained)
+        {
+            return new DefaultObjectPoolProvider { MaximumRetained = maxRetained }.Create(new RpcContextPolicy());
+        }
+
         /// <summary>
         /// 当池中没有可用对象时，创建一个新的 Context 实例。
         /// </summary>

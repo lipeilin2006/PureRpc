@@ -17,17 +17,10 @@ namespace PureRpc.Transport.Quic;
 
 internal sealed partial class QuicServerTransport : IServerTransport
 {
-    private const int MaxFrameSize = 64 * 1024 * 1024;
-    private const int MaxServiceNameLength = 256;
-    private const int MaxMethodNameLength = 256;
-    private const int MaxHeaderCount = 64;
-    private const int MaxHeaderKeyLength = 256;
-    private const int MaxHeaderValueLength = 4096;
-
     private readonly QuicServerOptions _options;
     private readonly ILogger<QuicServerTransport> _logger;
     private readonly ObjectPool<RpcContext> _contextPool;
-    private readonly SemaphoreSlim _requestThrottle = new(512, 512);
+    private readonly SemaphoreSlim _requestThrottle = new(RpcProtocolConstants.DefaultRequestThrottleLimit, RpcProtocolConstants.DefaultRequestThrottleLimit);
 
     private readonly ConcurrentDictionary<(long ConnectionId, uint RequestId), CancellationTokenSource> _activeRequests = new();
     private readonly ConcurrentDictionary<long, (PipeWriter Writer, SemaphoreSlim Lock)> _connections = new(Environment.ProcessorCount, 256);
@@ -40,8 +33,7 @@ internal sealed partial class QuicServerTransport : IServerTransport
     {
         _options = options.Value ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? NullLogger<QuicServerTransport>.Instance;
-        var provider = new DefaultObjectPoolProvider { MaximumRetained = 1024 };
-        _contextPool = provider.Create(new RpcContextPolicy());
+        _contextPool = RpcContextPolicy.CreatePool();
     }
 
     public async Task StartAsync(Func<RpcContext, ReadOnlySequence<byte>, Task> onRequestReceived, CancellationToken ct)
@@ -119,17 +111,7 @@ internal sealed partial class QuicServerTransport : IServerTransport
                 while (TryParseRequest(ref buffer, connId, out var header, out var payload))
                 {
                     var context = _contextPool.Get();
-                    context.ConnectionId = connId;
-                    context.RequestId = header.RequestId;
-                    context.ServiceName = header.ServiceName;
-                    context.MethodName = header.MethodName;
-                    context.RemoteEndPoint = remoteEP;
-
-                    if (header.Headers is { Count: > 0 })
-                    {
-                        foreach (var kv in header.Headers)
-                            context.Headers[kv.Key] = kv.Value;
-                    }
+                    context.PopulateRequest(connId, header.RequestId, header.ServiceName, header.MethodName, remoteEP, header.Headers);
 
                     var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     var key = (connId, header.RequestId);
@@ -198,56 +180,22 @@ internal sealed partial class QuicServerTransport : IServerTransport
     private async ValueTask SendInternalAsync(RpcContext ctx, PipeWriter writer, SemaphoreSlim locker, CancellationToken ct)
     {
         var data = ((ArrayBufferWriter<byte>)ctx.ResponseBuffer).WrittenMemory;
-        var responseHeaders = ctx.Headers;
-        int headerCount = responseHeaders.Count;
-        int headersBlockSize = 0;
-        string[]? keys = null, values = null;
-        int[]? keySizes = null, valSizes = null;
-        if (headerCount > 0)
-        {
-            keys = new string[headerCount];
-            values = new string[headerCount];
-            keySizes = new int[headerCount];
-            valSizes = new int[headerCount];
-            int i = 0;
-            foreach (var kv in responseHeaders)
-            {
-                keys[i] = kv.Key;
-                values[i] = kv.Value;
-                keySizes[i] = Encoding.UTF8.GetByteCount(kv.Key);
-                valSizes[i] = Encoding.UTF8.GetByteCount(kv.Value);
-                headersBlockSize += 4 + keySizes[i] + 4 + valSizes[i];
-                i++;
-            }
-        }
+        var headerInfo = RpcFrameCodec.PrepareHeaders(ctx.HeadersOrNull);
+
+        int bodyLen = 1 + 4 + 4 + 4 + headerInfo.HeadersBlockSize + data.Length;
+        int frameHeaderSize = 4 + 1 + 4 + 4 + 4 + headerInfo.HeadersBlockSize;
 
         await locker.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-int bodyLen = 1 + 4 + 4 + 4 + headersBlockSize + data.Length;
-        int frameHeaderSize = 4 + 1 + 4 + 4 + 4 + headersBlockSize;
-
             var span = writer.GetSpan(frameHeaderSize);
             BinaryPrimitives.WriteInt32LittleEndian(span[..4], bodyLen);
-            span[4] = ctx.IsAborted ? (byte)3 : (byte)2;
+            span[4] = (byte)(ctx.IsAborted ? RpcMessageType.Error : RpcMessageType.Response);
             BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(5, 4), ctx.RequestId);
             BinaryPrimitives.WriteInt32LittleEndian(span.Slice(9, 4), ctx.IsAborted ? 500 : 200);
 
             int pos = 13;
-            BinaryPrimitives.WriteInt32LittleEndian(span.Slice(pos, 4), headerCount);
-            pos += 4;
-
-            for (int i = 0; i < headerCount; i++)
-            {
-                BinaryPrimitives.WriteInt32LittleEndian(span.Slice(pos, 4), keySizes![i]);
-                pos += 4;
-                Encoding.UTF8.GetBytes(keys![i], span.Slice(pos, keySizes[i]));
-                pos += keySizes[i];
-                BinaryPrimitives.WriteInt32LittleEndian(span.Slice(pos, 4), valSizes![i]);
-                pos += 4;
-                Encoding.UTF8.GetBytes(values![i], span.Slice(pos, valSizes[i]));
-                pos += valSizes[i];
-            }
+            pos = RpcFrameCodec.WriteHeaders(span, pos, in headerInfo);
 
             writer.Advance(frameHeaderSize);
             if (data.Length > 0) writer.Write(data.Span);
@@ -270,13 +218,13 @@ int bodyLen = 1 + 4 + 4 + 4 + headersBlockSize + data.Length;
         buffer.Slice(0, 9).CopyTo(headSpan);
         int totalLen = BinaryPrimitives.ReadInt32LittleEndian(headSpan[..4]);
 
-        if (totalLen < 5 || totalLen > MaxFrameSize) return false;
+        if (totalLen < 5 || totalLen > RpcProtocolConstants.MaxFrameSize) return false;
         if (buffer.Length < totalLen + 4U) return false;
 
         byte type = headSpan[4];
         uint reqId = BinaryPrimitives.ReadUInt32LittleEndian(headSpan.Slice(5, 4));
 
-        if (type == 8)
+        if (type == (byte)RpcMessageType.Cancel)
         {
             var key = (connectionId, reqId);
             if (_activeRequests.TryRemove(key, out var cts))
@@ -288,47 +236,21 @@ int bodyLen = 1 + 4 + 4 + 4 + headersBlockSize + data.Length;
             return false;
         }
 
-        if (type != 1) { buffer = buffer.Slice(totalLen + 4); return false; }
+        if (type != (byte)RpcMessageType.Request) { buffer = buffer.Slice(totalLen + 4); return false; }
 
         if (totalLen < 13) return false;
 
         var reader = new SequenceReader<byte>(buffer.Slice(9, totalLen - 5));
 
-        if (!TryReadString(ref reader, out var svc, MaxServiceNameLength)) return false;
-        if (!TryReadString(ref reader, out var met, MaxMethodNameLength)) return false;
+        if (!RpcFrameCodec.TryReadString(ref reader, out var svc, RpcProtocolConstants.MaxServiceNameLength)) return false;
+        if (!RpcFrameCodec.TryReadString(ref reader, out var met, RpcProtocolConstants.MaxMethodNameLength)) return false;
 
         if (!reader.TryReadLittleEndian(out int headerCount)) return false;
-        if (headerCount < 0 || headerCount > MaxHeaderCount) return false;
-        IReadOnlyDictionary<string, string>? headers = null;
-        if (headerCount > 0)
-        {
-            var dict = new Dictionary<string, string>(headerCount);
-            for (int i = 0; i < headerCount; i++)
-            {
-                if (!TryReadString(ref reader, out var key, MaxHeaderKeyLength)) return false;
-                if (!TryReadString(ref reader, out var val, MaxHeaderValueLength)) return false;
-                dict[key] = val;
-            }
-            headers = dict;
-        }
+        if (!RpcFrameCodec.TryParseHeadersSequence(ref reader, headerCount, out var headers)) return false;
 
         header = (reqId, svc, met, headers);
         payload = reader.UnreadSequence;
         buffer = buffer.Slice(totalLen + 4);
-        return true;
-    }
-
-    private static bool TryReadString(ref SequenceReader<byte> reader, out string result, int maxLength = int.MaxValue)
-    {
-        result = string.Empty;
-        if (!reader.TryReadLittleEndian(out int len)) return false;
-        if (len <= 0 || len > maxLength) return false;
-        if (reader.Remaining < len) return false;
-
-        result = reader.UnreadSequence.IsSingleSegment
-            ? Encoding.UTF8.GetString(reader.UnreadSpan.Slice(0, len))
-            : Encoding.UTF8.GetString(reader.UnreadSequence.Slice(0, len));
-        reader.Advance(len);
         return true;
     }
 

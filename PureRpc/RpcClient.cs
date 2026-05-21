@@ -1,8 +1,10 @@
 ﻿using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.ObjectPool;
 using PureRpc.Abstractions;
 
 namespace PureRpc;
@@ -22,6 +24,10 @@ internal sealed partial class RpcClient : IRpcClient
     private int _connectionStarted = 0;
     private bool _isDisposed;
     private readonly Dictionary<string, string> _defaultHeaders = new();
+
+    private readonly DefaultObjectPoolProvider _poolProvider = new() { MaximumRetained = 1024 };
+    private readonly ObjectPool<PendingRequest> _pendingPool;
+
     private static readonly Action<object?, CancellationToken> CancelPendingRequestCallback = static (state, token) =>
     {
         if (state is not CancelRegistrationState s) return;
@@ -53,6 +59,17 @@ internal sealed partial class RpcClient : IRpcClient
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _logger = logger ?? NullLogger<RpcClient>.Instance;
         _metrics = metrics ?? new RpcMetrics();
+        _pendingPool = _poolProvider.Create(new PendingRequestPolicy());
+    }
+
+    private sealed class PendingRequestPolicy : IPooledObjectPolicy<PendingRequest>
+    {
+        public PendingRequest Create() => new();
+        public bool Return(PendingRequest obj)
+        {
+            obj.Reset();
+            return true;
+        }
     }
 
     #region Source Generated Logging
@@ -115,31 +132,40 @@ internal sealed partial class RpcClient : IRpcClient
         }
 
         var startTimestamp = Stopwatch.GetTimestamp();
-        var tags = new KeyValuePair<string, object?>[]
-        {
-            new("rpc.service", serviceName),
-            new("rpc.method", methodName),
-        };
+        var tags = new TagList { { "rpc.service", serviceName }, { "rpc.method", methodName } };
 
         _metrics.ClientRequests.Add(1, tags);
 
         uint requestId = (uint)Interlocked.Increment(ref _nextRequestId);
 
-        var pending = new PendingRequest();
+        var pending = _pendingPool.Get();
         _pendingRequests[requestId] = pending;
 
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+        CancellationTokenSource? timeoutCts = null;
+        CancellationTokenSource? linkedCts = null;
+        CancellationToken effectiveCt;
         CancellationTokenRegistration registration = default;
         try
         {
-            registration = linkedCts.Token.UnsafeRegister(CancelPendingRequestCallback, new CancelRegistrationState { Client = this, RequestId = requestId });
+            if (ct.CanBeCanceled)
+            {
+                timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+                effectiveCt = linkedCts.Token;
+            }
+            else
+            {
+                timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                effectiveCt = timeoutCts.Token;
+            }
+
+            registration = effectiveCt.UnsafeRegister(CancelPendingRequestCallback, new CancelRegistrationState { Client = this, RequestId = requestId });
 
             LogInvoking(_logger, serviceName, methodName, requestId);
 
             var mergedHeaders = MergeHeaders(headers);
 
-            await _transport.SendAsync(requestId, serviceName, methodName, requestPayload, linkedCts.Token, mergedHeaders).ConfigureAwait(false);
+            await _transport.SendAsync(requestId, serviceName, methodName, requestPayload, effectiveCt, mergedHeaders).ConfigureAwait(false);
 
             return await pending.AsValueTask().ConfigureAwait(false);
         }
@@ -154,8 +180,10 @@ internal sealed partial class RpcClient : IRpcClient
             _metrics.ClientRequestDuration.Record(
                 Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds, tags);
             registration.Dispose();
-            // 确保字典清理（已完成或取消的请求）
+            linkedCts?.Dispose();
+            timeoutCts?.Dispose();
             _pendingRequests.TryRemove(requestId, out _);
+            _pendingPool.Return(pending);
         }
     }
 
@@ -179,8 +207,7 @@ internal sealed partial class RpcClient : IRpcClient
         {
             if (success)
             {
-                var copiedPayload = new ReadOnlySequence<byte>(payload.ToArray());
-                pending.SetResult(copiedPayload);
+                pending.SetResult(new ReadOnlySequence<byte>(payload.ToArray()));
             }
             else
             {

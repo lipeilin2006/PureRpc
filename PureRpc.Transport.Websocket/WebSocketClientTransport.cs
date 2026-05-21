@@ -55,87 +55,49 @@ internal sealed partial class WebSocketClientTransport : IClientTransport
         if (_socket?.State != WebSocketState.Open)
             throw new IOException("WebSocket is not connected.");
 
-        var frame = BuildFrame(requestId, serviceName, methodName, data, headers);
-        await _socket.SendAsync(new ArraySegment<byte>(frame), WebSocketMessageType.Binary, true, ct).ConfigureAwait(false);
-    }
-
-    private static byte[] BuildFrame(uint requestId, string serviceName, string methodName,
-        ReadOnlySequence<byte> data, IDictionary<string, string>? headers)
-    {
         int svcByteCount = Encoding.UTF8.GetByteCount(serviceName);
         int metByteCount = Encoding.UTF8.GetByteCount(methodName);
-        int headerCount = headers?.Count ?? 0;
-        int headersBlockSize = 0;
-        string[]? keys = null, values = null;
-        int[]? keySizes = null, valSizes = null;
-        if (headerCount > 0)
-        {
-            keys = new string[headerCount];
-            values = new string[headerCount];
-            keySizes = new int[headerCount];
-            valSizes = new int[headerCount];
-            int i = 0;
-            foreach (var kv in headers!)
-            {
-                keys[i] = kv.Key;
-                values[i] = kv.Value;
-                keySizes[i] = Encoding.UTF8.GetByteCount(kv.Key);
-                valSizes[i] = Encoding.UTF8.GetByteCount(kv.Value);
-                headersBlockSize += 4 + keySizes[i] + 4 + valSizes[i];
-                i++;
-            }
-        }
+        var headerInfo = RpcFrameCodec.PrepareHeaders(headers as IReadOnlyDictionary<string, string>);
 
-        int bodyLen = 1 + 4 + 4 + svcByteCount + 4 + metByteCount + 4 + headersBlockSize + (int)data.Length;
-        var buffer = new byte[bodyLen];
-        buffer[0] = 1;
-        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(1, 4), requestId);
-        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(5, 4), svcByteCount);
-        int pos = 9;
-        Encoding.UTF8.GetBytes(serviceName, buffer.AsSpan(pos, svcByteCount));
-        pos += svcByteCount;
-        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(pos, 4), metByteCount);
-        pos += 4;
-        Encoding.UTF8.GetBytes(methodName, buffer.AsSpan(pos, metByteCount));
-        pos += metByteCount;
-        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(pos, 4), headerCount);
-        pos += 4;
-        for (int i = 0; i < headerCount; i++)
+        int bodyLen = 1 + 4 + 4 + svcByteCount + 4 + metByteCount + 4 + headerInfo.HeadersBlockSize + (int)data.Length;
+        byte[] rented = ArrayPool<byte>.Shared.Rent(bodyLen);
+        try
         {
-            BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(pos, 4), keySizes![i]);
-            pos += 4;
-            Encoding.UTF8.GetBytes(keys![i], buffer.AsSpan(pos, keySizes[i]));
-            pos += keySizes[i];
-            BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(pos, 4), valSizes![i]);
-            pos += 4;
-            Encoding.UTF8.GetBytes(values![i], buffer.AsSpan(pos, valSizes[i]));
-            pos += valSizes[i];
+            int written = RpcFrameCodec.WriteRequestSpan(rented, requestId, serviceName, methodName, in headerInfo, svcByteCount, metByteCount);
+            if (data.Length > 0)
+            {
+                if (data.IsSingleSegment)
+                    data.FirstSpan.CopyTo(rented.AsSpan(written));
+                else
+                    foreach (var seg in data)
+                    {
+                        seg.Span.CopyTo(rented.AsSpan(written));
+                        written += seg.Length;
+                    }
+            }
+
+            await _socket.SendAsync(new ArraySegment<byte>(rented, 0, bodyLen), WebSocketMessageType.Binary, true, ct).ConfigureAwait(false);
         }
-        if (data.Length > 0)
+        finally
         {
-            if (data.IsSingleSegment)
-                data.FirstSpan.CopyTo(buffer.AsSpan(pos));
-            else
-                foreach (var seg in data)
-                {
-                    seg.Span.CopyTo(buffer.AsSpan(pos));
-                    pos += seg.Length;
-                }
+            ArrayPool<byte>.Shared.Return(rented);
         }
-        return buffer;
     }
 
     public async ValueTask CancelRequestAsync(uint requestId, CancellationToken ct = default)
     {
         if (_socket?.State != WebSocketState.Open) return;
-        var buffer = new byte[5];
-        buffer[0] = 8;
-        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(1, 4), requestId);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(5);
         try
         {
-            await _socket.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Binary, true, ct).ConfigureAwait(false);
+            RpcFrameCodec.WriteCancelSpan(rented, requestId);
+            await _socket.SendAsync(new ArraySegment<byte>(rented, 0, 5), WebSocketMessageType.Binary, true, ct).ConfigureAwait(false);
         }
         catch (Exception ex) { LogCancelError(_logger, ex); }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     private async Task ReceiveLoopAsync(CancellationToken ct)
@@ -183,23 +145,11 @@ internal sealed partial class WebSocketClientTransport : IClientTransport
         IReadOnlyDictionary<string, string>? headers = null;
         if (headerCount > 0)
         {
-            var dict = new Dictionary<string, string>(headerCount);
-            for (int i = 0; i < headerCount; i++)
-            {
-                int keyLen = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, 4));
-                offset += 4;
-                string key = Encoding.UTF8.GetString(span.Slice(offset, keyLen));
-                offset += keyLen;
-                int valLen = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, 4));
-                offset += 4;
-                string val = Encoding.UTF8.GetString(span.Slice(offset, valLen));
-                offset += valLen;
-                dict[key] = val;
-            }
+            if (!RpcFrameCodec.TryParseHeadersSpan(span, ref offset, headerCount, out var dict)) return;
             headers = dict;
         }
-        bool isSuccess = type != 3 && statusCode == 200;
-        var payload = new ReadOnlySequence<byte>(span.Slice(offset).ToArray());
+        bool isSuccess = type != (byte)RpcMessageType.Error && statusCode == 200;
+        var payload = new ReadOnlySequence<byte>(message, offset, message.Length - offset);
         _onResponse(requestId, payload, isSuccess, isSuccess ? null : Encoding.UTF8.GetString(span.Slice(offset)), headers);
     }
 

@@ -27,8 +27,7 @@ internal sealed partial class Http2ServerTransport : IServerTransport
     {
         _options = options.Value ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? NullLogger<Http2ServerTransport>.Instance;
-        var provider = new DefaultObjectPoolProvider { MaximumRetained = 1024 };
-        _contextPool = provider.Create(new RpcContextPolicy());
+        _contextPool = RpcContextPolicy.CreatePool();
     }
 
     public Task StartAsync(Func<RpcContext, ReadOnlySequence<byte>, Task> onRequestReceived, CancellationToken ct)
@@ -69,8 +68,7 @@ internal sealed partial class Http2ServerTransport : IServerTransport
             var span = requestBytes.AsSpan();
             byte type = span[0];
 
-            // Cancel 帧：查找并取消正在处理的请求
-            if (type == 8)
+            if (type == (byte)RpcMessageType.Cancel)
             {
                 uint cancelId = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(1, 4));
                 if (_activeRequests.TryRemove(cancelId, out var cts))
@@ -82,50 +80,32 @@ internal sealed partial class Http2ServerTransport : IServerTransport
                 return;
             }
 
-            if (type != 1) { context.Response.StatusCode = 400; return; }
+            if (type != (byte)RpcMessageType.Request) { context.Response.StatusCode = 400; return; }
 
             uint requestId = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(1, 4));
             int svcLen = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(5, 4));
-            if (svcLen <= 0 || svcLen > 256) { context.Response.StatusCode = 400; return; }
+            if (svcLen <= 0 || svcLen > RpcProtocolConstants.MaxServiceNameLength) { context.Response.StatusCode = 400; return; }
             int offset = 9;
             string serviceName = Encoding.UTF8.GetString(span.Slice(offset, svcLen));
             offset += svcLen;
 
             int metLen = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, 4));
-            if (metLen <= 0 || metLen > 256) { context.Response.StatusCode = 400; return; }
+            if (metLen <= 0 || metLen > RpcProtocolConstants.MaxMethodNameLength) { context.Response.StatusCode = 400; return; }
             offset += 4;
             string methodName = Encoding.UTF8.GetString(span.Slice(offset, metLen));
             offset += metLen;
 
             int headerCount = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, 4));
-            if (headerCount < 0 || headerCount > 64) { context.Response.StatusCode = 400; return; }
             offset += 4;
 
-            var headers = new Dictionary<string, string>();
-            for (int i = 0; i < headerCount; i++)
-            {
-                int keyLen = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, 4));
-                if (keyLen <= 0 || keyLen > 256) { context.Response.StatusCode = 400; return; }
-                offset += 4;
-                string key = Encoding.UTF8.GetString(span.Slice(offset, keyLen));
-                offset += keyLen;
-                int valLen = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, 4));
-                if (valLen <= 0 || valLen > 4096) { context.Response.StatusCode = 400; return; }
-                offset += 4;
-                string val = Encoding.UTF8.GetString(span.Slice(offset, valLen));
-                offset += valLen;
-                headers[key] = val;
-            }
+            Dictionary<string, string>? headers;
+            if (!RpcFrameCodec.TryParseHeadersSpan(span, ref offset, headerCount, out headers))
+            { context.Response.StatusCode = 400; return; }
 
-            var payload = new ReadOnlySequence<byte>(span.Slice(offset).ToArray());
+            var payload = new ReadOnlySequence<byte>(requestBytes, offset, requestBytes.Length - offset);
             var ctx = _contextPool.Get();
-            ctx.ConnectionId = 0;
-            ctx.RequestId = requestId;
-            ctx.ServiceName = serviceName;
-            ctx.MethodName = methodName;
-            foreach (var kv in headers) ctx.Headers[kv.Key] = kv.Value;
+            ctx.PopulateRequest(0, requestId, serviceName, methodName, null, headers as IReadOnlyDictionary<string, string>);
 
-            // 注册可被取消的 CTS
             var requestCts = CancellationTokenSource.CreateLinkedTokenSource(
                 _serverCts?.Token ?? default, context.RequestAborted);
             _activeRequests[requestId] = requestCts;
@@ -141,45 +121,24 @@ internal sealed partial class Http2ServerTransport : IServerTransport
                 requestCts.Dispose();
             }
 
-            // 构建响应
             var data = ((ArrayBufferWriter<byte>)ctx.ResponseBuffer).WrittenMemory;
-            int hc = ctx.Headers.Count;
-            int hbs = 0;
-            string[]? keys = null, values = null;
-            int[]? ks = null, vs = null;
-            if (hc > 0)
-            {
-                keys = new string[hc]; values = new string[hc];
-                ks = new int[hc]; vs = new int[hc];
-                int i = 0;
-                foreach (var kv in ctx.Headers)
-                {
-                    keys[i] = kv.Key; values[i] = kv.Value;
-                    ks[i] = Encoding.UTF8.GetByteCount(kv.Key);
-                    vs[i] = Encoding.UTF8.GetByteCount(kv.Value);
-                    hbs += 4 + ks[i] + 4 + vs[i]; i++;
-                }
-            }
+            var headerInfo = RpcFrameCodec.PrepareHeaders(ctx.HeadersOrNull);
 
-            int bodyLen = 1 + 4 + 4 + 4 + hbs + data.Length;
-            var resp = new byte[bodyLen];
-            resp[0] = (byte)(ctx.IsAborted ? 3 : 2);
-            BinaryPrimitives.WriteUInt32LittleEndian(resp.AsSpan(1, 4), requestId);
-            BinaryPrimitives.WriteInt32LittleEndian(resp.AsSpan(5, 4), ctx.IsAborted ? 500 : 200);
-            int pos = 9;
-            BinaryPrimitives.WriteInt32LittleEndian(resp.AsSpan(pos, 4), hc); pos += 4;
-            for (int i = 0; i < hc; i++)
+            int bodyLen = 1 + 4 + 4 + 4 + headerInfo.HeadersBlockSize + data.Length;
+            byte[] rented = ArrayPool<byte>.Shared.Rent(bodyLen);
+            try
             {
-                BinaryPrimitives.WriteInt32LittleEndian(resp.AsSpan(pos, 4), ks![i]); pos += 4;
-                Encoding.UTF8.GetBytes(keys![i], resp.AsSpan(pos, ks[i])); pos += ks[i];
-                BinaryPrimitives.WriteInt32LittleEndian(resp.AsSpan(pos, 4), vs![i]); pos += 4;
-                Encoding.UTF8.GetBytes(values![i], resp.AsSpan(pos, vs[i])); pos += vs[i];
-            }
-            if (data.Length > 0) data.Span.CopyTo(resp.AsSpan(pos));
+                int written = RpcFrameCodec.WriteResponseSpan(rented, requestId, ctx.IsAborted, in headerInfo, data.Length);
+                if (data.Length > 0) data.Span.CopyTo(rented.AsSpan(written));
 
-            context.Response.StatusCode = 200;
-            context.Response.ContentType = "application/octet-stream";
-            await context.Response.Body.WriteAsync(resp).ConfigureAwait(false);
+                context.Response.StatusCode = 200;
+                context.Response.ContentType = "application/octet-stream";
+                await context.Response.Body.WriteAsync(rented, 0, bodyLen).ConfigureAwait(false);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(rented);
+            }
             _contextPool.Return(ctx);
         }
         catch (Exception ex) { LogError(_logger, ex); context.Response.StatusCode = 500; }
@@ -192,8 +151,6 @@ internal sealed partial class Http2ServerTransport : IServerTransport
         return ms.ToArray();
     }
 
-    // HTTP/2 传输的响应在 HandleRequestAsync 中内联发送，
-    // 此处不需要额外操作。
     public ValueTask SendResponseAsync(RpcContext context, CancellationToken ct) => default;
 
     public async ValueTask DisposeAsync()

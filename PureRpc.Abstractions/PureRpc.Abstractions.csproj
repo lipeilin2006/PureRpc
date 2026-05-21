@@ -14,6 +14,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="PureRpc" />
+    <InternalsVisibleTo Include="PureRpc.Transport.Tcp" />
+    <InternalsVisibleTo Include="PureRpc.Transport.Quic" />
+    <InternalsVisibleTo Include="PureRpc.Transport.Websocket" />
+    <InternalsVisibleTo Include="PureRpc.Transport.Kcp" />
+    <InternalsVisibleTo Include="PureRpc.Transport.Http2" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.7" />
     <PackageReference Include="Microsoft.Extensions.ObjectPool" Version="10.0.7" />
   </ItemGroup>

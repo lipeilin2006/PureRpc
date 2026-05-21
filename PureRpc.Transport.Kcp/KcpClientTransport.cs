@@ -11,15 +11,10 @@ namespace PureRpc.Transport.Kcp;
 
 internal sealed partial class KcpClientTransport : IClientTransport
 {
-    private const int MaxHeaderCount = 64;
-    private const int MaxHeaderKeyLength = 256;
-    private const int MaxHeaderValueLength = 4096;
-
     private readonly KcpClientOptions _options;
     private readonly ILogger<KcpClientTransport> _logger;
 
-    // 所有 KCP 操作仅在 tick 线程执行，通过队列传递数据
-    private readonly ConcurrentQueue<byte[]> _sendQueue = new();
+    private readonly ConcurrentQueue<(byte[] Data, int Length)> _sendQueue = new();
     private KcpClient? _client;
     private CancellationTokenSource? _tickCts;
     private Task? _tickTask;
@@ -27,6 +22,7 @@ internal sealed partial class KcpClientTransport : IClientTransport
     private bool _isConnected;
     private TaskCompletionSource? _connectedTcs;
     private Action<uint, ReadOnlySequence<byte>, bool, string?, IReadOnlyDictionary<string, string>?>? _onResponse;
+    private readonly SemaphoreSlim _tickSignal = new(0);
 
     public bool IsConnected => _isConnected && _client is { connected: true };
 
@@ -79,7 +75,6 @@ internal sealed partial class KcpClientTransport : IClientTransport
         _connectedTcs?.TrySetResult();
     }
 
-    // 仅供 tick 线程调用
     private void OnDataReceived(ArraySegment<byte> message, KcpChannel channel)
     {
         if (message.Count < 10) return;
@@ -90,36 +85,21 @@ internal sealed partial class KcpClientTransport : IClientTransport
         uint requestId = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(1, 4));
         int statusCode = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(5, 4));
         int headerCount = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(9, 4));
-        if (headerCount < 0 || headerCount > MaxHeaderCount) return;
+        if (headerCount < 0 || headerCount > RpcProtocolConstants.MaxHeaderCount) return;
 
         int offset = 13;
         IReadOnlyDictionary<string, string>? headers = null;
         if (headerCount > 0)
         {
-            var dict = new Dictionary<string, string>(headerCount);
-            for (int i = 0; i < headerCount; i++)
-            {
-                int keyLen = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, 4));
-                if (keyLen <= 0 || keyLen > MaxHeaderKeyLength || offset + 4 + keyLen > message.Count) return;
-                offset += 4;
-                string key = Encoding.UTF8.GetString(span.Slice(offset, keyLen));
-                offset += keyLen;
-                int valLen = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, 4));
-                if (valLen <= 0 || valLen > MaxHeaderValueLength || offset + 4 + valLen > message.Count) return;
-                offset += 4;
-                string val = Encoding.UTF8.GetString(span.Slice(offset, valLen));
-                offset += valLen;
-                dict[key] = val;
-            }
+            if (!RpcFrameCodec.TryParseHeadersSpan(span, ref offset, headerCount, out var dict)) return;
             headers = dict;
         }
 
-        bool isSuccess = type != 3 && statusCode == 200;
-        var payload = new ReadOnlySequence<byte>(span.Slice(offset).ToArray());
+        bool isSuccess = type != (byte)RpcMessageType.Error && statusCode == 200;
+        var payload = new ReadOnlySequence<byte>(message.Array!, message.Offset + offset, message.Count - offset);
         _onResponse(requestId, payload, isSuccess, isSuccess ? null : Encoding.UTF8.GetString(span.Slice(offset)), headers);
     }
 
-    // 仅序列化，不入库 KCP（由 tick 线程实际发送）
     public ValueTask SendAsync(
         uint requestId, string serviceName, string methodName,
         ReadOnlySequence<byte> data, CancellationToken ct, IDictionary<string, string>? headers = null)
@@ -129,69 +109,27 @@ internal sealed partial class KcpClientTransport : IClientTransport
 
         int svcByteCount = Encoding.UTF8.GetByteCount(serviceName);
         int metByteCount = Encoding.UTF8.GetByteCount(methodName);
-        int headerCount = headers?.Count ?? 0;
-        int headersBlockSize = 0;
-        string[]? keys = null, values = null;
-        int[]? keySizes = null, valSizes = null;
-        if (headerCount > 0)
-        {
-            keys = new string[headerCount];
-            values = new string[headerCount];
-            keySizes = new int[headerCount];
-            valSizes = new int[headerCount];
-            int i = 0;
-            foreach (var kv in headers!)
-            {
-                keys[i] = kv.Key;
-                values[i] = kv.Value;
-                keySizes[i] = Encoding.UTF8.GetByteCount(kv.Key);
-                valSizes[i] = Encoding.UTF8.GetByteCount(kv.Value);
-                headersBlockSize += 4 + keySizes[i] + 4 + valSizes[i];
-                i++;
-            }
-        }
+        var headerInfo = RpcFrameCodec.PrepareHeaders(headers as IReadOnlyDictionary<string, string>);
 
-        int bodyLen = 1 + 4 + 4 + svcByteCount + 4 + metByteCount + 4 + headersBlockSize + (int)data.Length;
-        var buffer = new byte[bodyLen];
+        int bodyLen = 1 + 4 + 4 + svcByteCount + 4 + metByteCount + 4 + headerInfo.HeadersBlockSize + (int)data.Length;
+        byte[] rented = ArrayPool<byte>.Shared.Rent(bodyLen);
 
-        buffer[0] = 1;
-        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(1, 4), requestId);
-        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(5, 4), svcByteCount);
-        int pos = 9;
-        Encoding.UTF8.GetBytes(serviceName, buffer.AsSpan(pos, svcByteCount));
-        pos += svcByteCount;
-        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(pos, 4), metByteCount);
-        pos += 4;
-        Encoding.UTF8.GetBytes(methodName, buffer.AsSpan(pos, metByteCount));
-        pos += metByteCount;
-
-        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(pos, 4), headerCount);
-        pos += 4;
-        for (int i = 0; i < headerCount; i++)
-        {
-            BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(pos, 4), keySizes![i]);
-            pos += 4;
-            Encoding.UTF8.GetBytes(keys![i], buffer.AsSpan(pos, keySizes[i]));
-            pos += keySizes[i];
-            BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(pos, 4), valSizes![i]);
-            pos += 4;
-            Encoding.UTF8.GetBytes(values![i], buffer.AsSpan(pos, valSizes[i]));
-            pos += valSizes[i];
-        }
+        int written = RpcFrameCodec.WriteRequestSpan(rented, requestId, serviceName, methodName, in headerInfo, svcByteCount, metByteCount);
 
         if (data.Length > 0)
         {
             if (data.IsSingleSegment)
-                data.FirstSpan.CopyTo(buffer.AsSpan(pos));
+                data.FirstSpan.CopyTo(rented.AsSpan(written));
             else
                 foreach (var seg in data)
                 {
-                    seg.Span.CopyTo(buffer.AsSpan(pos));
-                    pos += seg.Length;
+                    seg.Span.CopyTo(rented.AsSpan(written));
+                    written += seg.Length;
                 }
         }
 
-        _sendQueue.Enqueue(buffer);
+        _sendQueue.Enqueue((rented, bodyLen));
+        _tickSignal.Release();
         return default;
     }
 
@@ -199,10 +137,10 @@ internal sealed partial class KcpClientTransport : IClientTransport
     {
         if (_client == null || !_client.connected) return default;
 
-        var buffer = new byte[5];
-        buffer[0] = 8;
-        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(1, 4), requestId);
-        _sendQueue.Enqueue(buffer);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(5);
+        RpcFrameCodec.WriteCancelSpan(rented, requestId);
+        _sendQueue.Enqueue((rented, 5));
+        _tickSignal.Release();
         return default;
     }
 
@@ -214,10 +152,9 @@ internal sealed partial class KcpClientTransport : IClientTransport
             {
                 _client?.Tick();
                 DrainSendQueue();
-                // 有数据时低延迟轮询，空闲时按配置间隔休眠
                 try
                 {
-                    await Task.Delay(_sendQueue.IsEmpty ? _options.TickInterval : 1, ct).ConfigureAwait(false);
+                    await _tickSignal.WaitAsync(_options.TickInterval, ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { break; }
             }
@@ -232,12 +169,12 @@ internal sealed partial class KcpClientTransport : IClientTransport
         }
     }
 
-    // tick 线程独占，无需锁
     private void DrainSendQueue()
     {
-        while (_sendQueue.TryDequeue(out var data))
+        while (_sendQueue.TryDequeue(out var item))
         {
-            _client?.Send(new ArraySegment<byte>(data), KcpChannel.Reliable);
+            _client?.Send(new ArraySegment<byte>(item.Data, 0, item.Length), KcpChannel.Reliable);
+            ArrayPool<byte>.Shared.Return(item.Data);
         }
     }
 
