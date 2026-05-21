@@ -3,15 +3,23 @@ using Grpc.Net.Client;
 using PureRpc.BenchMark.Grpc;
 
 // ==========================================
-// 1. Start gRPC server (HTTP/2)
+// 1. Start gRPC server (HTTP/2 cleartext)
 // ==========================================
+AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+
 var serverBuilder = WebApplication.CreateBuilder(args);
 serverBuilder.Logging.ClearProviders();
-serverBuilder.WebHost.UseUrls("http://127.0.0.1:5020");
+serverBuilder.WebHost.UseKestrel(o => o.ListenLocalhost(5020, listen =>
+{
+    listen.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2;
+}));
 serverBuilder.Services.AddGrpc();
 var serverApp = serverBuilder.Build();
 serverApp.MapGrpcService<BenchmarkServiceImpl>();
 _ = serverApp.RunAsync();
+
+// Wait for server to start
+await Task.Delay(500);
 
 // ==========================================
 // 2. Create gRPC client channel
