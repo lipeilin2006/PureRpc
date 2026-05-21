@@ -5,6 +5,11 @@ using System.Collections.Generic;
 
 namespace PureRpc.Transport.Kcp
 {
+    /// <summary>
+    /// KCP 可靠传输协议核心实现 / KCP reliable transport protocol core implementation.
+    /// 基于 https://github.com/skywind3000/kcp，尽量保持与原始代码一致 / 
+    /// Based on https://github.com/skywind3000/kcp, kept as close to original as possible.
+    /// </summary>
     public class Kcp
     {
         // original Kcp has a define option, which is not defined by default:
@@ -95,9 +100,12 @@ namespace PureRpc.Transport.Kcp
         // 复用 header segment，避免每次 Flush 从池取/还
         readonly Segment _headerSeg = new Segment();
 
-        // ikcp_create
-        // create a new kcp control object, 'conv' must equal in two endpoint
-        // from the same connection.
+        /// <summary>
+        /// 使用会话号和输出回调创建 Kcp 实例 / Creates a Kcp instance with a conversation ID and output callback.
+        /// conv 必须在两端匹配 / conv must match on both endpoints.
+        /// </summary>
+        /// <param name="conv">会话号 / Conversation identifier.</param>
+        /// <param name="output">输出回调，当 Kcp 需要发送数据时调用 / Output callback, invoked when Kcp needs to send data.</param>
         public Kcp(uint conv, Action<byte[], int> output)
         {
             this.conv   = conv;
@@ -127,7 +135,10 @@ namespace PureRpc.Transport.Kcp
         // this way we'll never miss it anywhere.
         void SegmentDelete(Segment seg) => SegmentPool.Return(seg);
 
-        // calculate how many packets are waiting to be sent
+        /// <summary>
+        /// 计算等待发送的消息数量 / Calculates the number of messages waiting to be sent.
+        /// 包括发送缓冲区和发送队列中的消息 / Includes messages in both send buffer and send queue.
+        /// </summary>
         public int WaitSnd => snd_buf.Count + snd_queue.Count;
 
         // ikcp_wnd_unused
@@ -139,11 +150,13 @@ namespace PureRpc.Transport.Kcp
             return 0;
         }
 
-        // ikcp_recv
-        // receive data from kcp state machine
-        //   returns number of bytes read.
-        //   returns negative on error.
-        // note: pass negative length to peek.
+        /// <summary>
+        /// 从 KCP 状态机接收数据 / Receives data from the KCP state machine.
+        /// 返回读取的字节数；负数表示错误 / Returns the number of bytes read; negative values indicate errors.
+        /// </summary>
+        /// <param name="buffer">接收缓冲区 / The receive buffer.</param>
+        /// <param name="len">缓冲区大小 / The buffer size.</param>
+        /// <returns>读取的字节数；-1 表示队列空；-2 表示消息不完整；-3 表示缓冲区太小 / Bytes read; -1 for empty queue; -2 for incomplete message; -3 for buffer too small.</returns>
         public int Receive(byte[] buffer, int len)
         {
             // kcp's ispeek feature is not supported.
@@ -230,9 +243,11 @@ namespace PureRpc.Transport.Kcp
             return len;
         }
 
-        // ikcp_peeksize
-        // check the size of next message in the recv queue.
-        // returns -1 if there is no message, or if the message is still incomplete.
+        /// <summary>
+        /// 检查接收队列中下一条消息的大小 / Checks the size of the next message in the receive queue.
+        /// 返回 -1 表示没有消息或消息不完整 / Returns -1 if no message or message is still incomplete.
+        /// </summary>
+        /// <returns>下一条消息的大小，或 -1 表示无可用消息 / The size of the next message, or -1 if unavailable.</returns>
         public int PeekSize()
         {
             int length = 0;
@@ -267,8 +282,13 @@ namespace PureRpc.Transport.Kcp
             return length;
         }
 
-        // ikcp_send
-        // splits message into MTU sized fragments, adds them to snd_queue.
+        /// <summary>
+        /// 将消息分片并发送到发送队列 / Splits messages into MTU-sized fragments and adds them to the send queue.
+        /// </summary>
+        /// <param name="buffer">要发送的数据 / The data to send.</param>
+        /// <param name="offset">数据起始偏移量 / The starting offset of the data.</param>
+        /// <param name="len">数据长度 / The length of the data.</param>
+        /// <returns>0 表示成功；-1 表示长度为负；-2 表示超出窗口大小 / 0 for success; -1 for negative length; -2 for exceeding window size.</returns>
         public int Send(byte[] buffer, int offset, int len)
         {
             // fragment count
@@ -517,10 +537,13 @@ namespace PureRpc.Transport.Kcp
             rcv_buf.RemoveRange(0, removed);
         }
 
-        // ikcp_input
-        // used when you receive a low level packet (e.g. UDP packet)
-        // => original kcp uses offset=0, we made it a parameter so that high
-        //    level can skip the channel byte more easily
+        /// <summary>
+        /// 将底层数据包输入到 KCP 状态机 / Inputs a low-level data packet to the KCP state machine.
+        /// </summary>
+        /// <param name="data">数据包字节数组 / The packet byte array.</param>
+        /// <param name="offset">数据起始偏移量 / The starting offset.</param>
+        /// <param name="size">数据大小 / The size of the data.</param>
+        /// <returns>0 表示成功；负数表示错误 / 0 for success; negative for errors.</returns>
         public int Input(byte[] data, int offset, int size)
         {
             uint prev_una = snd_una;
@@ -695,12 +718,10 @@ namespace PureRpc.Transport.Kcp
             }
         }
 
-        // ikcp_flush
-        // flush remain ack segments.
-        // flush may output multiple <= MTU messages from MakeSpace / FlushBuffer.
-        // the amount of messages depends on the sliding window.
-        // configured by send/receive window sizes + congestion control.
-        // with congestion control, the window will be extremely small(!).
+        /// <summary>
+        /// 刷新剩余的确认段和发送缓冲区 / Flushes remaining acknowledgment segments and send buffer.
+        /// 可能输出多条不超过 MTU 的消息 / May output multiple messages not exceeding MTU.
+        /// </summary>
         public void Flush()
         {
             int size  = 0;     // amount of bytes to flush. 'buffer ptr' in C.
@@ -921,15 +942,11 @@ namespace PureRpc.Transport.Kcp
             }
         }
 
-        // ikcp_update
-        // update state (call it repeatedly, every 10ms-100ms), or you can ask
-        // Check() when to call it again (without Input/Send calling).
-        //
-        // 'current' - current timestamp in millisec. pass it to Kcp so that
-        // Kcp doesn't have to do any stopwatch/deltaTime/etc. code
-        //
-        // time as uint, likely to minimize bandwidth.
-        // uint.max = 4294967295 ms = 1193 hours = 49 days
+        /// <summary>
+        /// 更新 KCP 状态（应定期调用，每 10ms-100ms）/ 
+        /// Updates the KCP state (should be called periodically, every 10ms-100ms).
+        /// </summary>
+        /// <param name="currentTimeMilliSeconds">当前时间戳（毫秒）/ Current timestamp in milliseconds.</param>
         public void Update(uint currentTimeMilliSeconds)
         {
             current = currentTimeMilliSeconds;
@@ -968,15 +985,13 @@ namespace PureRpc.Transport.Kcp
             }
         }
 
-        // ikcp_check
-        // Determine when should you invoke update
-        // Returns when you should invoke update in millisec, if there is no
-        // input/send calling. you can call update in that time, instead of
-        // call update repeatly.
-        //
-        // Important to reduce unnecessary update invoking. use it to schedule
-        // update (e.g. implementing an epoll-like mechanism, or optimize update
-        // when handling massive kcp connections).
+        /// <summary>
+        /// 确定下次调用 Update 的时间 / Determines when to next call Update.
+        /// 如果没有输入/发送调用，可用于优化调度 / 
+        /// Can be used to optimize scheduling if there are no Input/Send calls.
+        /// </summary>
+        /// <param name="current_">当前时间戳（毫秒）/ Current timestamp in milliseconds.</param>
+        /// <returns>下次应调用 Update 的时间戳 / The timestamp when Update should next be called.</returns>
         public uint Check(uint current_)
         {
             uint ts_flush_ = ts_flush;
@@ -1018,8 +1033,11 @@ namespace PureRpc.Transport.Kcp
             return current_ + minimal;
         }
 
-        // ikcp_setmtu
-        // Change MTU (Maximum Transmission Unit) size.
+        /// <summary>
+        /// 设置最大传输单元 (MTU) 大小 / Sets the Maximum Transmission Unit (MTU) size.
+        /// </summary>
+        /// <param name="mtu">新的 MTU 值 / The new MTU value.</param>
+        /// <exception cref="ArgumentException">MTU 小于 50 或小于 OVERHEAD 时抛出 / Thrown when MTU is less than 50 or OVERHEAD.</exception>
         public void SetMtu(uint mtu)
         {
             if (mtu < 50 || mtu < OVERHEAD)
@@ -1030,7 +1048,11 @@ namespace PureRpc.Transport.Kcp
             mss = mtu - OVERHEAD;
         }
 
-        // ikcp_interval
+        /// <summary>
+        /// 设置内部工作间隔 / Sets the internal work interval.
+        /// 值会被限制在 10-5000 毫秒之间 / The value will be clamped between 10 and 5000 ms.
+        /// </summary>
+        /// <param name="interval">间隔时间（毫秒）/ Interval in milliseconds.</param>
         public void SetInterval(uint interval)
         {
             // clamp interval between 10 and 5000
@@ -1039,14 +1061,13 @@ namespace PureRpc.Transport.Kcp
             this.interval = interval;
         }
 
-        // ikcp_nodelay
-        // configuration: https://github.com/skywind3000/kcp/blob/master/README.en.md#protocol-configuration
-        //   nodelay : Whether nodelay mode is enabled, 0 is not enabled; 1 enabled.
-        //   interval 锛歅rotocol internal work interval, in milliseconds, such as 10 ms or 20 ms.
-        //   resend 锛欶ast retransmission mode, 0 represents off by default, 2 can be set (2 ACK spans will result in direct retransmission)
-        //   nc 锛歐hether to turn off flow control, 0 represents 鈥淒o not turn off鈥?by default, 1 represents 鈥淭urn off鈥?
-        // Normal Mode: ikcp_nodelay(kcp, 0, 40, 0, 0);
-        // Turbo Mode锛?ikcp_nodelay(kcp, 1, 10, 2, 1);
+        /// <summary>
+        /// 设置 NoDelay 模式和拥塞控制配置 / Sets the NoDelay mode and congestion control configuration.
+        /// </summary>
+        /// <param name="nodelay">是否启用 NoDelay 模式（0=关闭，1=开启）/ Whether to enable NoDelay mode (0=off, 1=on).</param>
+        /// <param name="interval">内部工作间隔（毫秒）/ Internal work interval in milliseconds.</param>
+        /// <param name="resend">快速重传模式（0=关闭，2=开启）/ Fast retransmission mode (0=off, 2=on).</param>
+        /// <param name="nocwnd">是否关闭拥塞窗口（true=关闭拥塞控制）/ Whether to disable congestion window (true=disable congestion control).</param>
         public void SetNoDelay(uint nodelay, uint interval = INTERVAL, int resend = 0, bool nocwnd = false)
         {
             this.nodelay = nodelay;
@@ -1075,7 +1096,12 @@ namespace PureRpc.Transport.Kcp
             this.nocwnd = nocwnd;
         }
 
-        // ikcp_wndsize
+        /// <summary>
+        /// 设置发送和接收窗口大小 / Sets the send and receive window sizes.
+        /// 接收窗口必须不小于最大分片数 / The receive window must be at least the maximum fragment size.
+        /// </summary>
+        /// <param name="sendWindow">发送窗口大小 / The send window size.</param>
+        /// <param name="receiveWindow">接收窗口大小 / The receive window size.</param>
         public void SetWindowSize(uint sendWindow, uint receiveWindow)
         {
             if (sendWindow > 0)

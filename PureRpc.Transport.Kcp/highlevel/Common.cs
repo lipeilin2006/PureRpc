@@ -6,9 +6,19 @@ using System.Threading.Tasks;
 
 namespace PureRpc.Transport.Kcp
 {
+    /// <summary>
+    /// KCP 通用辅助工具 / KCP common helper utilities.
+    /// 提供主机名解析、Socket 缓冲区配置和安全 Cookie 生成等功能 / 
+    /// Provides hostname resolution, socket buffer configuration, and secure cookie generation.
+    /// </summary>
     public static class Common
     {
-        // helper function to resolve host to IPAddress
+        /// <summary>
+        /// 解析主机名为 IP 地址数组（阻塞式） / Resolves a hostname to IP address arrays (blocking).
+        /// </summary>
+        /// <param name="hostname">主机名或 IP 地址字符串 / Hostname or IP address string.</param>
+        /// <param name="addresses">解析结果 IP 地址数组 / The resolved IP address array.</param>
+        /// <returns>解析成功返回 true；失败返回 false / True if resolution succeeded; false otherwise.</returns>
         public static bool ResolveHostname(string hostname, out IPAddress[] addresses)
         {
             try
@@ -25,6 +35,11 @@ namespace PureRpc.Transport.Kcp
             }
         }
 
+        /// <summary>
+        /// 异步解析主机名为 IP 地址数组 / Asynchronously resolves a hostname to IP address arrays.
+        /// </summary>
+        /// <param name="hostname">主机名或 IP 地址字符串 / Hostname or IP address string.</param>
+        /// <returns>解析结果 IP 地址数组 / The resolved IP address array.</returns>
         public static async Task<IPAddress[]> ResolveHostnameAsync(string hostname)
         {
             try
@@ -38,8 +53,14 @@ namespace PureRpc.Transport.Kcp
             }
         }
 
-        // if connections drop under heavy load, increase to OS limit.
-        // if still not enough, increase the OS limit.
+        /// <summary>
+        /// 配置 Socket 的收发缓冲区大小 / Configures socket receive and send buffer sizes.
+        /// 如果连接在高负载下断开，请增加到操作系统限制 / 
+        /// If connections drop under heavy load, increase to OS limit.
+        /// </summary>
+        /// <param name="socket">要配置的 Socket / The socket to configure.</param>
+        /// <param name="recvBufferSize">接收缓冲区大小 / Receive buffer size.</param>
+        /// <param name="sendBufferSize">发送缓冲区大小 / Send buffer size.</param>
         public static void ConfigureSocketBuffers(Socket socket, int recvBufferSize, int sendBufferSize)
         {
             // log initial size for comparison.
@@ -62,21 +83,19 @@ namespace PureRpc.Transport.Kcp
             Log.Info($"[KCP] RecvBuf = {initialReceive}=>{socket.ReceiveBufferSize} ({socket.ReceiveBufferSize/initialReceive}x) SendBuf = {initialSend}=>{socket.SendBufferSize} ({socket.SendBufferSize/initialSend}x)");
         }
 
-        // generate a connection hash from IP+Port.
-        //
-        // NOTE: IPEndPoint.GetHashCode() allocates.
-        //  it calls m_Address.GetHashCode().
-        //  m_Address is an IPAddress.
-        //  GetHashCode() allocates for IPv6:
-        //  https://github.com/mono/mono/blob/bdd772531d379b4e78593587d15113c37edd4a64/mcs/class/referencesource/System/net/System/Net/IPAddress.cs#L699
-        //
-        // => using only newClientEP.Port wouldn't work, because
-        //    different connections can have the same port.
+        /// <summary>
+        /// 从 IP+端口生成连接哈希 / Generates a connection hash from IP + port.
+        /// </summary>
+        /// <param name="endPoint">远程端点 / The remote endpoint.</param>
+        /// <returns>端点的哈希码 / The endpoint's hash code.</returns>
         public static int ConnectionHash(EndPoint endPoint) =>
             endPoint.GetHashCode();
 
-        // cookies need to be generated with a secure random generator.
-        // we don't want them to be deterministic / predictable.
+        /// <summary>
+        /// 使用安全随机数生成器生成连接 Cookie / Generates a connection cookie using a secure random number generator.
+        /// Cookie 用于防止 UDP 伪装攻击 / Cookies are used to prevent UDP spoofing attacks.
+        /// </summary>
+        /// <returns>随机生成的 32 位无符号整数 / A randomly generated 32-bit unsigned integer.</returns>
         public static uint GenerateCookie()
         {
             Span<byte> buf = stackalloc byte[4];

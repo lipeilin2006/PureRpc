@@ -1,10 +1,12 @@
-﻿// common config struct, instead of passing 10 parameters manually every time.
-using System;
+﻿using System;
 
 namespace PureRpc.Transport.Kcp
 {
-    // [Serializable] to show it in Unity inspector.
-    // 'class' so we can set defaults easily.
+    /// <summary>
+    /// KCP 配置类 / KCP configuration class.
+    /// 封装所有 KCP 连接参数，避免每次手动传递大量参数 / 
+    /// Encapsulates all KCP connection parameters, avoiding the need to pass many parameters manually each time.
+    /// </summary>
     [Serializable]
     public class KcpConfig
     {
