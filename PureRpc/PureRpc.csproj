@@ -19,6 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="PureRpc.Test" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\PureRpc.Abstractions\PureRpc.Abstractions.csproj" />
   </ItemGroup>
 

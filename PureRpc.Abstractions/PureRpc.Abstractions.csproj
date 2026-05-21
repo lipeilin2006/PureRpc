@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="PureRpc" />
+    <InternalsVisibleTo Include="PureRpc.Test" />
     <InternalsVisibleTo Include="PureRpc.Transport.Tcp" />
     <InternalsVisibleTo Include="PureRpc.Transport.Quic" />
     <InternalsVisibleTo Include="PureRpc.Transport.Websocket" />
